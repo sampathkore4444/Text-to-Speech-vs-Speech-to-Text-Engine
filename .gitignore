@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# Test / tooling
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Runtime data (uploads, results, downloaded models, audio)
+data/
+*.wav
+*.mp3
+*.flac
+*.ogg
+*.onnx
+*.jsonl
+
+# Env / IDE
+.env
+.idea/
+.vscode/
+*.log

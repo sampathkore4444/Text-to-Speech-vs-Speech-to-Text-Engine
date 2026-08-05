@@ -1,0 +1,68 @@
+# Bank Speech AI - local production-like stack.
+#
+#   docker compose up --build
+#   curl http://localhost:8000/health
+#
+# Scale workers horizontally:  docker compose up --scale worker=3
+
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      SPEECHAI_CONFIG: /app/configs/config.yaml
+      SPEECHAI_QUEUE__BACKEND: redis
+      SPEECHAI_QUEUE__REDIS_URL: redis://redis:6379/0
+      SPEECHAI_STORAGE__DATA_DIR: /data
+      SPEECHAI_API__API_KEY: ${SPEECHAI_API__API_KEY:-}
+    volumes:
+      - ./data:/data
+      - ./configs:/app/configs:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker:
+    build: .
+    command: python -m speechai.workers.batch_worker
+    environment:
+      SPEECHAI_CONFIG: /app/configs/config.yaml
+      SPEECHAI_QUEUE__BACKEND: redis
+      SPEECHAI_QUEUE__REDIS_URL: redis://redis:6379/0
+      SPEECHAI_STORAGE__DATA_DIR: /data
+    volumes:
+      - ./data:/data
+      - ./configs:/app/configs:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./deploy/prometheus:/etc/prometheus:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+    restart: unless-stopped
+
+volumes:
+  redis-data:
+  prometheus-data:

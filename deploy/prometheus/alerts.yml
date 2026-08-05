@@ -1,0 +1,69 @@
+# Alerting rules for the speech platform SLIs.
+# Wire `alertmanager` (or the Grafana notifier) to these in production.
+
+groups:
+  - name: speech-platform
+    rules:
+      # Quality regression gates (set by `speechai evaluate --gate`)
+      - alert: SttWerRegression
+        expr: stt_wer > 0.10
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "STT WER above 10% tolerance"
+          description: "Mean WER on eval set {{ $labels.eval_set }} is {{ $value }}"
+
+      - alert: SttRtfDegradation
+        expr: stt_rtf_mean > 0.50
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "STT slower than real-time"
+          description: "Mean RTF is {{ $value }} (target < 0.5)"
+
+      # Availability / reliability
+      - alert: SpeechApiDown
+        expr: up{job="bank-speech-ai"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Speech API unreachable"
+
+      - alert: SpeechJobFailures
+        expr: sum(increase(speech_jobs_total{status="failed"}[10m])) > 5
+        labels:
+          severity: warning
+        annotations:
+          summary: "Elevated batch job failures"
+          description: "{{ $value }} jobs failed in the last 10 minutes"
+
+      - alert: SpeechQueueBacklog
+        expr: speech_queue_depth > 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Job queue backlog"
+          description: "Queue depth is {{ $value }} - consider scaling workers"
+
+      - alert: SpeechModelUnloaded
+        expr: speech_model_loaded == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Engine model not loaded"
+          description: "Model for engine {{ $labels.engine }} is not loaded"
+
+      # Latency SLO
+      - alert: SttLatencyP95High
+        expr: histogram_quantile(0.95, sum by (le) (rate(stt_latency_seconds_bucket[10m]))) > 30
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "STT p95 latency above 30s"
+          description: "p95 transcription latency is {{ $value }}s"

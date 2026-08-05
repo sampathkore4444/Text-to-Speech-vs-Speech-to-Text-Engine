@@ -1,0 +1,90 @@
+# =============================================================================
+# Bank Speech AI Platform - central configuration
+# -----------------------------------------------------------------------------
+# Overridable at runtime via SPEECHAI_* environment variables using `__` as a
+# separator, e.g.:
+#   SPEECHAI_API__PORT=9000
+#   SPEECHAI_STT__MODEL_SIZE=small
+#   SPEECHAI_QUEUE__BACKEND=redis
+#   SPEECHAI_QUEUE__REDIS_URL=redis://redis:6379/0
+# See .env.example for the full list.
+# =============================================================================
+
+service:
+  name: "bank-speech-ai"
+  environment: "development"   # development | staging | production
+  log_level: "INFO"
+  log_format: "json"           # json | text
+
+api:
+  host: "0.0.0.0"
+  port: 8000
+  # Empty = auth disabled. Set a value (via env in production) to require an
+  # `X-API-Key` header on everything except /health, /metrics and /docs.
+  api_key: ""
+  max_upload_mb: 50
+  timeout_seconds: 300
+
+storage:
+  # Uploads, job results and downloaded models live under this directory.
+  data_dir: "data"
+  result_ttl_seconds: 86400    # how long batch job results are kept
+  max_results: 1000            # hard cap on retained batch results
+
+stt:
+  engine: "whisper"            # faster-whisper (CTranslate2) on-prem engine
+  model_size: "base"           # tiny | base | small | medium | large-v3 (or HF id)
+  # Optional: local converted CTranslate2 model dir (e.g. a LoRA fine-tuned
+  # checkpoint exported by `speechai-finetune`). Takes precedence over model_size.
+  model_path: ""
+  device: "auto"               # auto | cpu | cuda
+  compute_type: "auto"         # auto | int8 | float16 | float32
+  beam_size: 5
+  language: null               # null = auto-detect (set e.g. "en" for latency)
+  vad_filter: true             # faster-whisper built-in VAD
+  min_silence_ms: 500          # segment boundary for streaming transcription
+  max_segment_ms: 12000        # hard cap on a single streaming utterance
+  partial_interval_ms: 2500    # cadence of partial (non-final) results
+
+tts:
+  engine: "piper"              # Piper (onnxruntime) on-prem engine
+  voice: "en_US-lessac-medium"
+  model_path: ""               # explicit .onnx path; empty = look under models dir
+  sample_rate: 22050
+  default_speed: 1.0
+
+vad:
+  backend: "auto"              # webrtc | energy | auto (auto tries webrtc first)
+  frame_ms: 30
+  aggressiveness: 2            # webrtc: 0..3 (higher = more aggressive)
+  energy_threshold_db: -35.0   # energy fallback threshold
+  min_speech_ms: 250           # speech must persist this long to start an utterance
+  min_silence_ms: 400          # silence of this length closes an utterance
+
+queue:
+  backend: "memory"            # memory | redis
+  redis_url: "redis://localhost:6379/0"
+  poll_interval_seconds: 1.0
+  job_timeout_seconds: 900
+
+redaction:
+  enabled: true
+  # mask  -> keep last N digits (e.g. "XXXX XXXX 3456")
+  # redact -> fully remove the value ("[REDACTED]")
+  # none  -> leave as-is (not recommended for production banking)
+  mode: "mask"
+  mask_keep_last: 4
+  patterns:
+    card: true
+    account: true
+    ifsc: true
+    aadhaar: true
+    pan: true
+    ssn: true
+    phone: true
+    email: true
+
+eval:
+  default_wer_tolerance: 0.10  # regression gate targets used by `speechai evaluate`
+  default_rtf_tolerance: 0.50
+  report_dir: "data/eval"
