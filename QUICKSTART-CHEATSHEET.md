@@ -41,7 +41,7 @@ export SPEECHAI_QUEUE__BACKEND=redis                 # set in BOTH terminals
 export SPEECHAI_QUEUE__REDIS_URL=redis://localhost:6379/0
 ```
 
-**Verify:** `curl http://localhost:8000/health`
+**Verify:** `curl http://localhost:8000/health` · demo console UI: http://localhost:8000/
 
 **Stop:**
 
@@ -65,6 +65,7 @@ docker compose up -d --build
 
 # Verify
 curl http://localhost:8000/health
+# Demo console UI: http://localhost:8000/  (transcribe upload · live mic · TTS player)
 # Prometheus UI: http://localhost:9090
 
 # Scale workers horizontally

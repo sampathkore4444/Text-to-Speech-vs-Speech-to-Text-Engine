@@ -853,13 +853,23 @@ boots and reports healthy even before models load. The Docker image
 
 ### 6.1 What "frontend" means here
 
-The platform does **not** ship a browser SPA — it ships a **headless API
-service** plus reference clients. Any of these is a "frontend":
+The platform ships a **browser demo console** at `/` (single self-contained
+HTML page served by the API) plus a headless API service. Any of these is a
+"frontend":
 
-- `scripts/streaming_demo.py` — the canonical interactive client (mic → ASR,
+- **Demo console** — `http://localhost:8000/` — three tabs: upload an audio
+  file for transcription (with segments, PII redaction badges and telemetry),
+  stream speech from the microphone over WebSocket (live partial/final
+  hypotheses), and synthesize text to speech with an in-page player.
+- `scripts/streaming_demo.py` — the canonical terminal client (mic → ASR,
   text → TTS) showing the full wire protocol.
 - `speechai` CLI — sync REST/offline operations.
 - A custom SPA/mobile app/IVR that calls the REST + WebSocket endpoints below.
+
+The console is served from `speechai/api/ui/index.html` (declared as package
+data in `pyproject.toml` so it ships in the Docker image). It is whitelisted
+from API-key auth, but every API call it makes still sends `X-API-Key` when
+you enter a key in the top-right field.
 
 > ⚠️ **Browser note:** the API does not enable CORS. A browser SPA on a
 > different origin must be served behind a same-origin reverse proxy or the API
@@ -984,7 +994,7 @@ async with websockets.connect("ws://localhost:8000/v1/ws/transcribe") as ws:
    recv  {"type": "done", "chunks": 2}              (JSON text frame) -> server closes
 ```
 
-### 6.9 Formal WebSocket protocol spec
+### 6.8 Formal WebSocket protocol spec
 
 The wire protocol is fully specified — message JSON Schemas, binary framing,
 state machine, close codes and worked examples — in
@@ -997,10 +1007,11 @@ generated schema by default). Each path carries the vendor extension
 `x-websocket: true` plus a pointer to the spec above, so tooling can discover
 both streaming contracts next to the REST API.
 
-### 6.8 Endpoint reference summary
+### 6.9 Endpoint reference summary
 
 | Endpoint | Method | Content-Type in | Content-Type out | Purpose |
 |---|---|---|---|---|
+| `/` | GET | — | `text/html` | Browser demo console (transcribe upload · live mic · TTS player) |
 | `/health` | GET | — | JSON | Liveness/readiness incl. models + queue |
 | `/metrics` | GET | — | Prometheus text | Scrape endpoint |
 | `/v1/models` | GET | — | JSON | Engine/model config |
