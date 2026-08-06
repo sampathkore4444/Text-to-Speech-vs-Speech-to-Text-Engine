@@ -10,7 +10,7 @@ from typing import Any
 from speechai.core import metrics
 from speechai.core.logging import set_request_id
 
-_WHITELIST = frozenset({"/health", "/metrics", "/docs", "/redoc", "/openapi.json"})
+_WHITELIST = frozenset({"/", "/health", "/metrics", "/docs", "/redoc", "/openapi.json"})
 
 
 class ObservabilityMiddleware:

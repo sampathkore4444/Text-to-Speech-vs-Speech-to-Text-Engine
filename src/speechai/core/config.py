@@ -178,11 +178,17 @@ def _apply_env_overlay(payload: dict[str, Any]) -> dict[str, Any]:
     for key, raw in sorted(os.environ.items()):
         if not key.startswith(ENV_PREFIX):
             continue
+        value = raw.strip()
+        if not value:
+            # An empty override means "use the default" - e.g. docker compose
+            # injects SPEECHAI_API__API_KEY="" when the host variable is unset.
+            # Coercing "" to None would fail validation for str fields.
+            continue
         parts = key[len(ENV_PREFIX) :].lower().split("__")
         node: dict[str, Any] = result
         for part in parts[:-1]:
             node = node.setdefault(part, {})
-        node[parts[-1]] = _coerce_scalar(raw)
+        node[parts[-1]] = _coerce_scalar(value)
     return result
 
 

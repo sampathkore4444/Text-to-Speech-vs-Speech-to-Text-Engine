@@ -9,15 +9,17 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 
 from speechai import __version__
 from speechai.api.middleware import APIKeyMiddleware, ObservabilityMiddleware
 from speechai.api.routes import router as api_router
 from speechai.api.schemas import HealthResponse
 from speechai.api.ws import router as ws_router
+from speechai.api.ws_openapi import extend_openapi_schema
 from speechai.core import metrics
 from speechai.core.config import Settings
 from speechai.core.errors import SpeechAIError
@@ -88,6 +90,18 @@ def create_app(
 
     _register_exception_handlers(app)
 
+    # FastAPI omits WebSocket routes from the generated OpenAPI schema; inject
+    # structured path entries (x-websocket vendor extension) so they show up in
+    # /docs and /openapi.json. See speechai.api.ws_openapi and docs/ws-protocol.md.
+    _openapi = app.openapi
+
+    def _openapi_with_ws() -> dict:
+        if app.openapi_schema is None:
+            app.openapi_schema = extend_openapi_schema(_openapi())
+        return app.openapi_schema
+
+    app.openapi = _openapi_with_ws
+
     @app.get("/health", response_model=HealthResponse, tags=["system"])
     async def health(request: Request) -> HealthResponse:
         pipeline = request.app.state.pipeline
@@ -103,6 +117,13 @@ def create_app(
     @app.get("/metrics", include_in_schema=False, tags=["system"])
     async def metrics_endpoint() -> Response:
         return Response(content=metrics.render(), media_type="text/plain; version=0.0.4")
+
+    # Browser demo console (transcribe upload / live mic / TTS player).
+    _ui_file = Path(__file__).parent / "ui" / "index.html"
+
+    @app.get("/", include_in_schema=False, tags=["ui"])
+    async def demo_ui() -> FileResponse:
+        return FileResponse(_ui_file, media_type="text/html")
 
     return app
 

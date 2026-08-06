@@ -27,6 +27,10 @@ services:
   worker:
     build: .
     command: python -m speechai.workers.batch_worker
+    # The Dockerfile HEALTHCHECK curls /health on :8000, which the worker does
+    # not serve - disable it so the container is not marked unhealthy.
+    healthcheck:
+      disable: true
     environment:
       SPEECHAI_CONFIG: /app/configs/config.yaml
       SPEECHAI_QUEUE__BACKEND: redis

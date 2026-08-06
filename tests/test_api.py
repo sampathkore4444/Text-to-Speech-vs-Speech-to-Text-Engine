@@ -38,6 +38,32 @@ def test_request_id_header(client) -> None:
     assert response.headers.get("x-request-id")
 
 
+def test_demo_ui_served(client) -> None:
+    """The browser demo console is served at the root."""
+    response = client.get("/")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert "Bank Speech AI" in response.text
+    assert "Live microphone" in response.text
+    assert "v1/ws/transcribe" in response.text
+
+
+def test_openapi_includes_websocket_paths(client) -> None:
+    """FastAPI omits WS routes from OpenAPI; the injected x-websocket paths must appear."""
+    response = client.get("/openapi.json")
+    assert response.status_code == 200
+    body = response.json()
+    paths = body["paths"]
+    assert "/v1/ws/transcribe" in paths
+    assert "/v1/ws/synthesize" in paths
+    assert paths["/v1/ws/transcribe"]["get"]["x-websocket"] is True
+    assert paths["/v1/ws/synthesize"]["get"]["x-websocket"] is True
+    assert body["x-websocket-spec"] == "docs/ws-protocol.md"
+    # The extension must not clobber the standard REST schema.
+    assert "/v1/transcribe" in paths
+    assert "post" in paths["/v1/transcribe"]
+
+
 def test_metric_path_template_low_cardinality() -> None:
     from speechai.api.middleware import _template_path
 
@@ -232,6 +258,7 @@ def test_api_key_enforced(tmp_path, fake_stt, fake_tts) -> None:
     with TestClient(app) as client:
         assert client.get("/health").status_code == 200  # whitelisted
         assert client.get("/metrics").status_code == 200  # whitelisted
+        assert client.get("/").status_code == 200  # demo UI whitelisted
         assert client.get("/v1/models").status_code == 401
         assert client.get("/v1/models", headers={"X-API-Key": "s3cret"}).status_code == 200
         assert client.get("/v1/models", headers={"X-API-Key": "wrong"}).status_code == 401

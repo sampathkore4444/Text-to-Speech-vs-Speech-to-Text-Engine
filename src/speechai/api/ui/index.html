@@ -1,0 +1,855 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Bank Speech AI — Console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg: #0a0f14;
+    --bg-glow: #101a24;
+    --panel: #10171f;
+    --panel-2: #16202b;
+    --panel-3: #1b2733;
+    --line: rgba(141, 162, 184, 0.14);
+    --line-strong: rgba(141, 162, 184, 0.28);
+    --ink: #e7eef5;
+    --ink-dim: #93a4b5;
+    --ink-faint: #5f7285;
+    --gold: #e0b25e;
+    --gold-soft: rgba(224, 178, 94, 0.14);
+    --live: #35d0a0;
+    --live-soft: rgba(53, 208, 160, 0.12);
+    --danger: #e5534b;
+    --danger-soft: rgba(229, 83, 75, 0.12);
+    --focus: rgba(224, 178, 94, 0.55);
+    --display: 'Space Grotesk', system-ui, sans-serif;
+    --body: 'Inter', system-ui, -apple-system, sans-serif;
+    --mono: 'IBM Plex Mono', ui-monospace, 'Cascadia Code', 'SF Mono', monospace;
+    --r: 10px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background:
+      radial-gradient(1200px 600px at 85% -10%, rgba(224, 178, 94, 0.07), transparent 60%),
+      radial-gradient(900px 500px at -10% 110%, rgba(53, 208, 160, 0.05), transparent 55%),
+      var(--bg);
+    color: var(--ink);
+    font-family: var(--body);
+    font-size: 15px;
+    line-height: 1.55;
+    min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+  }
+  ::selection { background: rgba(224, 178, 94, 0.35); }
+
+  .shell { max-width: 1060px; margin: 0 auto; padding: 28px 22px 60px; }
+
+  /* ---------- Header ---------- */
+  .topbar {
+    display: flex; align-items: center; gap: 18px;
+    padding-bottom: 18px; border-bottom: 1px solid var(--line);
+    flex-wrap: wrap;
+  }
+  .brand { display: flex; align-items: center; gap: 13px; margin-right: auto; }
+  .brand-mark {
+    width: 38px; height: 38px; border-radius: 9px;
+    background: linear-gradient(150deg, var(--gold), #b98a3e);
+    color: #0a0f14; display: grid; place-items: center;
+    font-family: var(--display); font-weight: 700; font-size: 19px;
+    box-shadow: 0 6px 22px rgba(224, 178, 94, 0.28);
+  }
+  .brand h1 {
+    font-family: var(--display); font-size: 20px; font-weight: 700;
+    letter-spacing: 0.01em; margin: 0; line-height: 1.1;
+  }
+  .brand small {
+    display: block; color: var(--ink-faint); font-size: 12px;
+    font-family: var(--mono); letter-spacing: 0.14em; text-transform: uppercase;
+  }
+  .keywrap { display: flex; align-items: center; gap: 8px; }
+  .keywrap label {
+    font-size: 12px; color: var(--ink-dim); font-family: var(--mono);
+    letter-spacing: 0.08em; text-transform: uppercase;
+  }
+  input[type="text"].key {
+    background: var(--panel); border: 1px solid var(--line);
+    color: var(--ink); border-radius: 7px; padding: 7px 10px;
+    font-family: var(--mono); font-size: 12px; width: 200px; outline: none;
+    transition: border-color .15s, box-shadow .15s;
+  }
+  input[type="text"].key:focus { border-color: var(--focus); box-shadow: 0 0 0 3px var(--gold-soft); }
+
+  /* ---------- Status strip ---------- */
+  .status-strip {
+    display: flex; gap: 10px; flex-wrap: wrap; align-items: center;
+    margin: 16px 0 4px; font-family: var(--mono); font-size: 11.5px;
+  }
+  .pill {
+    display: inline-flex; align-items: center; gap: 7px;
+    border: 1px solid var(--line); border-radius: 999px;
+    padding: 5px 12px; color: var(--ink-dim); background: var(--panel);
+  }
+  .pill b { color: var(--ink); font-weight: 500; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-faint); }
+  .pill.ok .dot { background: var(--live); box-shadow: 0 0 8px rgba(53,208,160,.8); }
+  .pill.warn .dot { background: var(--gold); }
+  .pill.err .dot { background: var(--danger); }
+
+  /* ---------- Tabs ---------- */
+  .tabs {
+    display: flex; gap: 4px; margin: 26px 0 18px;
+    border-bottom: 1px solid var(--line); padding-bottom: 0;
+  }
+  .tab {
+    appearance: none; background: none; border: none; cursor: pointer;
+    font-family: var(--display); font-size: 14px; font-weight: 600;
+    color: var(--ink-faint); padding: 10px 16px 12px;
+    border-bottom: 2px solid transparent; margin-bottom: -1px;
+    transition: color .15s, border-color .15s;
+    display: inline-flex; align-items: center; gap: 8px;
+  }
+  .tab .tnum { font-family: var(--mono); font-size: 11px; color: var(--gold); opacity: .8; }
+  .tab:hover { color: var(--ink-dim); }
+  .tab.active { color: var(--ink); border-bottom-color: var(--gold); }
+  .tab:focus-visible, button:focus-visible, select:focus-visible, a:focus-visible {
+    outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 4px;
+  }
+
+  .panel { display: none; animation: rise .28s ease both; }
+  .panel.active { display: block; }
+  @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--r);
+    padding: 20px; margin-bottom: 16px;
+  }
+  .card h2 {
+    font-family: var(--display); font-size: 14px; font-weight: 600;
+    margin: 0 0 14px; letter-spacing: 0.02em; color: var(--ink);
+    display: flex; align-items: center; gap: 9px;
+  }
+  .card h2 .kicker {
+    font-family: var(--mono); font-size: 10px; color: var(--gold);
+    letter-spacing: 0.16em; text-transform: uppercase;
+    border: 1px solid var(--line-strong); padding: 2px 7px; border-radius: 5px;
+  }
+
+  /* ---------- Dropzone ---------- */
+  .dropzone {
+    border: 1.5px dashed var(--line-strong); border-radius: var(--r);
+    padding: 34px 20px; text-align: center; cursor: pointer;
+    transition: border-color .18s, background .18s, transform .18s;
+    color: var(--ink-dim);
+  }
+  .dropzone:hover, .dropzone.drag { border-color: var(--gold); background: var(--gold-soft); }
+  .dropzone .dz-icon { font-size: 26px; margin-bottom: 8px; }
+  .dropzone .dz-file { font-family: var(--mono); font-size: 12.5px; color: var(--ink); }
+  .dropzone.drag { transform: scale(1.005); }
+
+  .options { display: flex; gap: 16px; flex-wrap: wrap; align-items: center; margin-top: 16px; }
+  .opt { display: flex; flex-direction: column; gap: 5px; }
+  .opt > label { font-size: 11.5px; color: var(--ink-dim); font-family: var(--mono); letter-spacing: 0.1em; text-transform: uppercase; }
+  select, input[type="range"] { accent-color: var(--gold); }
+  select {
+    background: var(--panel-2); border: 1px solid var(--line); color: var(--ink);
+    border-radius: 7px; padding: 7px 10px; font-size: 13.5px; font-family: var(--body); outline: none;
+  }
+  select:focus { border-color: var(--focus); }
+  .switch { display: inline-flex; align-items: center; gap: 9px; cursor: pointer; font-size: 13.5px; color: var(--ink-dim); }
+  .switch input { width: 15px; height: 15px; accent-color: var(--gold); }
+
+  .btn {
+    appearance: none; border: 1px solid var(--line-strong); background: var(--panel-2);
+    color: var(--ink); font-family: var(--display); font-weight: 600; font-size: 13.5px;
+    padding: 10px 18px; border-radius: 8px; cursor: pointer;
+    transition: transform .12s, border-color .15s, background .15s, box-shadow .15s;
+    display: inline-flex; align-items: center; gap: 9px;
+  }
+  .btn:hover { border-color: var(--gold); color: var(--gold); }
+  .btn:active { transform: translateY(1px); }
+  .btn.primary {
+    background: linear-gradient(150deg, #e8bd6d, #d2a046); border-color: transparent; color: #0a0f14;
+    box-shadow: 0 6px 18px rgba(224, 178, 94, 0.22);
+  }
+  .btn.primary:hover { filter: brightness(1.06); color: #0a0f14; }
+  .btn.primary:disabled, .btn:disabled { opacity: .45; cursor: not-allowed; transform: none; }
+  .btn.rec { background: rgba(229, 83, 75, 0.16); border-color: rgba(229, 83, 75, 0.5); color: var(--danger); }
+  .btn.rec:hover { border-color: var(--danger); color: var(--danger); }
+
+  /* ---------- Result blocks ---------- */
+  .transcript {
+    background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px;
+    padding: 16px 18px; font-size: 16.5px; line-height: 1.65; white-space: pre-wrap;
+    margin: 0; color: var(--ink);
+  }
+  .transcript .ph { color: var(--ink-faint); font-size: 14px; font-style: italic; }
+  .redact-badges { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+  .rbadge {
+    font-family: var(--mono); font-size: 11.5px; color: var(--gold);
+    background: var(--gold-soft); border: 1px solid rgba(224,178,94,.3);
+    padding: 3px 9px; border-radius: 999px;
+  }
+  .seglist { margin: 0; padding: 0; list-style: none; }
+  .seg {
+    display: grid; grid-template-columns: 150px 1fr 90px; gap: 12px;
+    padding: 10px 0; border-bottom: 1px solid var(--line); align-items: center;
+  }
+  .seg:last-child { border-bottom: none; }
+  .seg .t { font-family: var(--mono); font-size: 12px; color: var(--ink-dim); }
+  .seg .tx { font-size: 14.5px; }
+  .seg .conf { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
+  .seg .conf i { font-style: normal; font-family: var(--mono); font-size: 12px; color: var(--ink-dim); }
+  .seg .bar { width: 44px; height: 5px; border-radius: 3px; background: var(--panel-3); overflow: hidden; }
+  .seg .bar span { display: block; height: 100%; background: var(--live); border-radius: 3px; }
+
+  .metrics {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px;
+  }
+  .mcell { background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+  .mcell .k { font-size: 10.5px; color: var(--ink-faint); font-family: var(--mono); letter-spacing: .12em; text-transform: uppercase; }
+  .mcell .v { font-family: var(--mono); font-size: 15px; margin-top: 3px; color: var(--ink); }
+  .mcell .v small { color: var(--ink-faint); font-size: 11px; }
+
+  /* ---------- Live ---------- */
+  .live-head { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 16px; }
+  .rec-ind {
+    display: inline-flex; align-items: center; gap: 10px;
+    font-family: var(--mono); font-size: 12.5px; letter-spacing: .12em; text-transform: uppercase;
+    color: var(--ink-dim);
+  }
+  .rec-ind .dot { width: 10px; height: 10px; background: var(--ink-faint); }
+  .rec-ind.on .dot { background: var(--danger); animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; transform: scale(1);} 50% { opacity: .35; transform: scale(.72);} }
+  .eq { display: inline-flex; gap: 3px; align-items: flex-end; height: 16px; }
+  .eq i { width: 3px; background: var(--live); border-radius: 2px; height: 30%; animation: eq 1s ease-in-out infinite; }
+  .eq i:nth-child(2) { animation-delay: .15s; }
+  .eq i:nth-child(3) { animation-delay: .3s; }
+  .eq i:nth-child(4) { animation-delay: .45s; }
+  .eq.off i { animation-play-state: paused; background: var(--ink-faint); height: 20%; }
+  @keyframes eq { 0%,100% { height: 22%; } 50% { height: 100%; } }
+
+  .ticker {
+    border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2);
+    padding: 14px 16px; min-height: 54px; font-size: 15.5px; color: var(--ink-dim);
+    font-family: var(--mono); display: flex; align-items: center; gap: 12px;
+  }
+  .ticker .live-label { color: var(--live); font-size: 11px; letter-spacing: .18em; text-transform: uppercase; white-space: nowrap; }
+  .ticker .hype { color: var(--ink); word-break: break-word; }
+  .utterances { margin-top: 14px; }
+  .urow {
+    display: grid; grid-template-columns: 52px 1fr auto; gap: 12px; align-items: baseline;
+    padding: 10px 4px; border-bottom: 1px solid var(--line); animation: rise .2s ease both;
+  }
+  .urow .idx { font-family: var(--mono); font-size: 12px; color: var(--gold); }
+  .urow .txt { font-size: 14.5px; }
+  .urow .meta { font-family: var(--mono); font-size: 11.5px; color: var(--ink-faint); white-space: nowrap; }
+
+  /* ---------- Synthesize ---------- */
+  textarea {
+    width: 100%; background: var(--panel-2); border: 1px solid var(--line); color: var(--ink);
+    border-radius: 8px; padding: 14px; font-family: var(--body); font-size: 15px;
+    resize: vertical; min-height: 130px; outline: none; line-height: 1.55;
+  }
+  textarea:focus { border-color: var(--focus); box-shadow: 0 0 0 3px var(--gold-soft); }
+  .chips { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+  .chip {
+    border: 1px solid var(--line); background: var(--panel-2); color: var(--ink-dim);
+    font-size: 12.5px; padding: 5px 11px; border-radius: 999px; cursor: pointer;
+    transition: border-color .15s, color .15s, background .15s;
+  }
+  .chip:hover { border-color: var(--gold); color: var(--gold); background: var(--gold-soft); }
+  .synth-row { display: flex; gap: 14px; flex-wrap: wrap; align-items: flex-end; }
+  .slider-wrap { flex: 1; min-width: 170px; }
+  .slider-wrap .val { font-family: var(--mono); color: var(--gold); font-size: 12.5px; float: right; }
+  input[type="range"] { width: 100%; margin-top: 6px; }
+  .player { display: flex; align-items: center; gap: 14px; margin-top: 4px; }
+  .player audio { flex: 1; min-width: 0; height: 38px; }
+  audio::-webkit-media-controls-panel { background: var(--panel-2); }
+  .dl { text-decoration: none; }
+
+  /* ---------- Log + footer ---------- */
+  .log {
+    font-family: var(--mono); font-size: 12px; color: var(--ink-dim);
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 12px 14px; max-height: 120px; overflow-y: auto; margin-top: 20px;
+  }
+  .log .ln { display: flex; gap: 10px; padding: 2px 0; }
+  .log .ln .ts { color: var(--ink-faint); white-space: nowrap; }
+  .log .ln .ev { color: var(--gold); white-space: nowrap; }
+  .log .ln.err .ev { color: var(--danger); }
+  .log .ln.ok .ev { color: var(--live); }
+
+  footer {
+    margin-top: 34px; padding-top: 16px; border-top: 1px solid var(--line);
+    display: flex; gap: 18px; flex-wrap: wrap; font-size: 12.5px; color: var(--ink-faint);
+  }
+  footer a { color: var(--ink-dim); text-decoration: none; border-bottom: 1px solid transparent; }
+  footer a:hover { color: var(--gold); border-bottom-color: var(--gold); }
+
+  .banner {
+    border: 1px solid rgba(229, 83, 75, 0.45); background: var(--danger-soft);
+    color: #f2b8b4; border-radius: 8px; padding: 12px 14px; font-size: 13.5px;
+    margin-top: 14px; font-family: var(--mono);
+  }
+  .banner b { color: #ff9b94; }
+  .banner.ok { border-color: rgba(53,208,160,.45); background: var(--live-soft); color: #9fe8d2; }
+  .banner.ok b { color: var(--live); }
+
+  .muted { color: var(--ink-faint); font-size: 12.5px; }
+
+  @media (max-width: 720px) {
+    .seg { grid-template-columns: 1fr; gap: 4px; }
+    .urow { grid-template-columns: 40px 1fr; }
+    .brand h1 { font-size: 17px; }
+    .keywrap input[type="text"].key { width: 140px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark">◈</div>
+      <div>
+        <h1>Bank Speech AI</h1>
+        <small>Speech intelligence console</small>
+      </div>
+    </div>
+    <div class="keywrap">
+      <label for="apikey">API key</label>
+      <input type="text" id="apikey" class="key" placeholder="optional — X-API-Key" autocomplete="off" spellcheck="false" />
+    </div>
+  </header>
+
+  <div class="status-strip" id="statusStrip" aria-live="polite">
+    <span class="pill" id="stApi"><span class="dot"></span>API <b id="vApi">—</b></span>
+    <span class="pill" id="stStt"><span class="dot"></span>STT <b id="vStt">model —</b></span>
+    <span class="pill" id="stTts"><span class="dot"></span>TTS <b id="vTts">voice —</b></span>
+    <span class="pill" id="stQ"><span class="dot"></span>queue <b id="vQ">—</b></span>
+    <span class="pill" id="stEnv"><span class="dot"></span>env <b id="vEnv">—</b></span>
+  </div>
+
+  <nav class="tabs" role="tablist">
+    <button class="tab active" data-tab="tab-transcribe" role="tab" aria-selected="true"><span class="tnum">01</span>Transcribe</button>
+    <button class="tab" data-tab="tab-live" role="tab" aria-selected="false"><span class="tnum">02</span>Live microphone</button>
+    <button class="tab" data-tab="tab-synth" role="tab" aria-selected="false"><span class="tnum">03</span>Synthesize</button>
+  </nav>
+
+  <!-- ============ 01 · Transcribe ============ -->
+  <section id="tab-transcribe" class="panel active" role="tabpanel">
+    <div class="card">
+      <h2><span class="kicker">STT</span>Transcribe an audio file</h2>
+      <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="Choose an audio file to transcribe">
+        <div class="dz-icon">🎙️</div>
+        <div id="dzText">Drop an audio file here — or click to choose (wav, mp3, flac, ogg)</div>
+      </div>
+      <input type="file" id="fileInput" accept="audio/*" hidden />
+      <div class="options">
+        <div class="opt">
+          <label for="langSel">Language</label>
+          <select id="langSel">
+            <option value="">auto-detect</option>
+            <option>en</option><option>es</option><option>fr</option>
+            <option>de</option><option>hi</option><option>ta</option>
+          </select>
+        </div>
+        <label class="switch" style="margin-top:16px">
+          <input type="checkbox" id="redactToggle" checked /> Redact PII in the transcript
+        </label>
+        <button class="btn primary" id="btnTranscribe" style="margin-left:auto" disabled>Transcribe audio</button>
+      </div>
+    </div>
+
+    <div class="card" id="sttResult" hidden>
+      <h2><span class="kicker">Result</span>Transcript</h2>
+      <p class="transcript" id="sttText"><span class="ph">Nothing transcribed yet.</span></p>
+      <div class="redact-badges" id="sttRedactions"></div>
+      <div style="display:flex; gap:10px; margin-top:12px">
+        <button class="btn" id="btnCopy">Copy transcript</button>
+      </div>
+      <h2 style="margin-top:22px"><span class="kicker">Segments</span>Timed segments</h2>
+      <ul class="seglist" id="sttSegs"></ul>
+      <h2 style="margin-top:22px"><span class="kicker">Telemetry</span>Metrics</h2>
+      <div class="metrics" id="sttMetrics"></div>
+    </div>
+  </section>
+
+  <!-- ============ 02 · Live ============ -->
+  <section id="tab-live" class="panel" role="tabpanel">
+    <div class="card">
+      <h2><span class="kicker">WS · /v1/ws/transcribe</span>Live microphone transcription</h2>
+      <div class="live-head">
+        <span class="rec-ind" id="recInd"><span class="dot"></span><span id="recLabel">idle</span>
+          <span class="eq off" id="eq"><i></i><i></i><i></i><i></i></span>
+        </span>
+        <div class="opt" style="min-width:150px">
+          <label for="liveLang">Language</label>
+          <select id="liveLang">
+            <option value="">auto-detect</option>
+            <option>en</option><option>es</option><option>fr</option>
+            <option>de</option><option>hi</option><option>ta</option>
+          </select>
+        </div>
+        <button class="btn primary" id="btnMicStart" style="margin-left:auto">Start listening</button>
+        <button class="btn rec" id="btnMicStop" disabled>Stop</button>
+      </div>
+      <div class="ticker" aria-live="polite">
+        <span class="live-label">Live</span>
+        <span class="hype" id="liveHype">The partial transcript appears here as you speak…</span>
+      </div>
+      <div class="utterances" id="utterances"></div>
+    </div>
+  </section>
+
+  <!-- ============ 03 · Synthesize ============ -->
+  <section id="tab-synth" class="panel" role="tabpanel">
+    <div class="card">
+      <h2><span class="kicker">TTS</span>Synthesize speech from text</h2>
+      <div class="chips" id="phraseChips"></div>
+      <textarea id="ttsText" maxlength="10000" placeholder="Type what the bank should say…"></textarea>
+      <div class="muted" id="ttsCount" style="margin-top:6px; text-align:right">0 / 10000</div>
+      <div class="synth-row" style="margin-top:12px">
+        <div class="opt">
+          <label for="voiceSel">Voice</label>
+          <select id="voiceSel">
+            <option value="en_US-lessac-medium">en_US-lessac-medium</option>
+            <option value="en_US-amy-medium">en_US-amy-medium</option>
+            <option value="en_GB-alan-medium">en_GB-alan-medium</option>
+          </select>
+        </div>
+        <div class="slider-wrap">
+          <label for="speedRange">Speed <span class="val" id="speedVal">1.00×</span></label>
+          <input type="range" id="speedRange" min="0.5" max="2" step="0.05" value="1" />
+        </div>
+        <button class="btn primary" id="btnSpeak" style="margin-left:auto">Speak it</button>
+      </div>
+    </div>
+
+    <div class="card" id="ttsPlayerCard" hidden>
+      <h2><span class="kicker">Player</span>Playback</h2>
+      <div class="player">
+        <button class="btn" id="btnPlay">▶ Play</button>
+        <audio id="ttsAudio" controls preload="metadata"></audio>
+        <a class="btn dl" id="btnDownload" download="speech.wav">Download</a>
+      </div>
+      <div class="muted" id="ttsMeta" style="margin-top:10px"></div>
+    </div>
+  </section>
+
+  <div class="log" id="log" aria-live="polite"></div>
+
+  <footer>
+    <span>Bank Speech AI · v<span id="fVer">—</span></span>
+    <a href="/docs" target="_blank" rel="noopener">Swagger UI</a>
+    <a href="/metrics" target="_blank" rel="noopener">/metrics</a>
+    <a href="http://localhost:9090" target="_blank" rel="noopener">Prometheus</a>
+    <a href="docs/ws-protocol.md" target="_blank" rel="noopener">WS protocol spec</a>
+    <span id="sess">session —</span>
+  </footer>
+
+</div>
+
+<script>
+(function () {
+  'use strict';
+  var API = {
+    key: localStorage.getItem('bsa.apiKey') || '',
+    headers: function () {
+      var h = { 'Content-Type': 'application/json' };
+      if (API.key) h['X-API-Key'] = API.key;
+      return h;
+    }
+  };
+  var $ = function (id) { return document.getElementById(id); };
+  var logEl = $('log');
+  var sessId = Math.random().toString(16).slice(2, 8);
+
+  function log(ev, detail, cls) {
+    var d = new Date();
+    var ts = d.toTimeString().slice(0, 8);
+    var ln = document.createElement('div');
+    ln.className = 'ln' + (cls ? ' ' + cls : '');
+    ln.innerHTML = '<span class="ts">' + ts + '</span><span class="ev">' + ev + '</span><span>' + (detail || '') + '</span>';
+    logEl.appendChild(ln);
+    while (logEl.children.length > 40) logEl.removeChild(logEl.firstChild);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function apiError(body, status) {
+    if (body && body.error) {
+      var e = body.error;
+      return e.code + ' — ' + e.message;
+    }
+    return 'HTTP ' + status + ' — the server returned an unexpected response.';
+  }
+
+  /* ---------------- status strip ---------------- */
+  function refreshStatus() {
+    fetch('/health').then(function (r) { return r.json(); }).then(function (h) {
+      setPill('stApi', h.status, h.status === 'ok' ? 'ok' : 'err');
+      $('vApi').textContent = 'v' + h.version;
+      $('fVer').textContent = h.version;
+      setPill('stQ', 'depth ' + (h.queue && h.queue.depth != null ? h.queue.depth : '?'), 'ok');
+      $('vQ').textContent = h.queue ? h.queue.backend : '—';
+      setPill('stEnv', 'ok', 'ok');
+      $('vEnv').textContent = h.environment;
+    }).catch(function () { setPill('stApi', 'unreachable', 'err'); $('vApi').textContent = 'down'; });
+
+    var opt = API.key ? { headers: { 'X-API-Key': API.key } } : {};
+    fetch('/v1/models', opt).then(function (r) { return r.json(); }).then(function (m) {
+      if (!m.stt) return;
+      setPill('stStt', (m.stt.loaded ? 'loaded' : 'cold') + ' · ' + (m.stt.config.model_size || '?'), m.stt.loaded ? 'ok' : 'warn');
+      setPill('stTts', (m.tts.loaded ? 'loaded' : 'cold') + ' · ' + (m.tts.config.voice || '?'), m.tts.loaded ? 'ok' : 'warn');
+      $('vStt').textContent = (m.stt.loaded ? 'loaded · ' : 'cold · ') + (m.stt.config.model_size || '—');
+      $('vTts').textContent = (m.tts.loaded ? 'loaded · ' : 'cold · ') + (m.tts.config.voice || '—');
+    }).catch(function () {});
+  }
+  function setPill(id, state, cls) {
+    var p = $(id);
+    p.className = 'pill ' + (cls || '');
+    p.lastChild.nodeValue = state;
+  }
+
+  /* ---------------- tabs ---------------- */
+  var tabs = document.querySelectorAll('.tab');
+  tabs.forEach(function (t) {
+    t.addEventListener('click', function () {
+      tabs.forEach(function (x) { x.classList.remove('active'); x.setAttribute('aria-selected', 'false'); });
+      document.querySelectorAll('.panel').forEach(function (p) { p.classList.remove('active'); });
+      t.classList.add('active'); t.setAttribute('aria-selected', 'true');
+      $(t.dataset.tab).classList.add('active');
+    });
+  });
+
+  /* ---------------- API key ---------------- */
+  var keyInput = $('apikey');
+  keyInput.value = API.key;
+  keyInput.addEventListener('input', function () {
+    API.key = keyInput.value.trim();
+    localStorage.setItem('bsa.apiKey', API.key);
+    log('auth', API.key ? 'API key set — requests will send X-API-Key' : 'API key cleared (auth off)', API.key ? 'ok' : '');
+  });
+
+  /* ================= 01 · TRANSCRIBE ================= */
+  var dz = $('dropzone'), fileInput = $('fileInput'), chosenFile = null;
+
+  dz.addEventListener('click', function () { fileInput.click(); });
+  dz.addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInput.click(); } });
+  fileInput.addEventListener('change', function () { if (fileInput.files[0]) setFile(fileInput.files[0]); });
+  ['dragenter', 'dragover'].forEach(function (ev) {
+    dz.addEventListener(ev, function (e) { e.preventDefault(); dz.classList.add('drag'); });
+  });
+  ['dragleave', 'drop'].forEach(function (ev) {
+    dz.addEventListener(ev, function (e) { e.preventDefault(); dz.classList.remove('drag'); });
+  });
+  dz.addEventListener('drop', function (e) { if (e.dataTransfer.files[0]) setFile(e.dataTransfer.files[0]); });
+
+  function setFile(f) {
+    chosenFile = f;
+    dz.innerHTML = '<div class="dz-icon">🎙️</div><div class="dz-file">' + f.name + ' · ' + fmtBytes(f.size) + '</div>';
+    $('btnTranscribe').disabled = false;
+    log('file', f.name + ' (' + fmtBytes(f.size) + ') ready');
+  }
+  function fmtBytes(n) {
+    if (!n) return '0 B';
+    var u = ['B', 'KB', 'MB']; var i = 0;
+    while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+    return n.toFixed(n < 10 && i > 0 ? 1 : 0) + ' ' + u[i];
+  }
+
+  $('btnTranscribe').addEventListener('click', function () {
+    if (!chosenFile) return;
+    var btn = $('btnTranscribe'); btn.disabled = true; btn.textContent = 'Transcribing…';
+    var fd = new FormData();
+    fd.append('file', chosenFile);
+    var lang = $('langSel').value;
+    if (lang) fd.append('language', lang);
+    fd.append('redact', $('redactToggle').checked ? 'true' : 'false');
+    var headers = API.key ? { 'X-API-Key': API.key } : {};
+    var t0 = performance.now();
+    log('stt', 'POST /v1/transcribe — ' + chosenFile.name + ' (redact=' + $('redactToggle').checked + ')');
+
+    fetch('/v1/transcribe', { method: 'POST', headers: headers, body: fd })
+      .then(function (r) {
+        return r.json().catch(function () { return null; }).then(function (b) { return { ok: r.ok, status: r.status, body: b }; });
+      })
+      .then(function (res) {
+        var ms = ((performance.now() - t0) / 1000).toFixed(2);
+        if (!res.ok) throw { code: res.body && res.body.error ? res.body.error.code : 'http_' + res.status, message: apiError(res.body, res.status), status: res.status };
+        renderStt(res.body);
+        log('stt', '200 in ' + ms + 's — request_id ' + res.body.request_id, 'ok');
+      })
+      .catch(function (err) {
+        var hint = err.status === 503 ? 'Models are missing — run `python scripts/download_models.py` on the host.' : (err.status === 401 ? 'Add the API key in the top-right corner.' : '');
+        showBanner('sttResult', 'sttBanner', 'Transcription failed', err.code + ' — ' + err.message + (hint ? ' ' + hint : ''));
+        log('stt', (err.code || err.message) + ' — ' + err.message, 'err');
+      })
+      .finally(function () { btn.disabled = false; btn.textContent = 'Transcribe audio'; });
+  });
+
+  function renderStt(b) {
+    $('sttResult').hidden = false;
+    $('sttText').textContent = b.text || '(empty transcript)';
+    $('sttText').className = 'transcript' + (b.redacted ? '' : '');
+    var rb = $('sttRedactions'); rb.innerHTML = '';
+    if (b.redacted) {
+      var flag = document.createElement('span'); flag.className = 'rbadge'; flag.textContent = '⚠ PII redacted';
+      rb.appendChild(flag);
+      (b.redactions || []).forEach(function (r) {
+        var s = document.createElement('span'); s.className = 'rbadge'; s.textContent = r.type + ' → ' + r.masked;
+        rb.appendChild(s);
+      });
+    }
+    var segs = $('sttSegs'); segs.innerHTML = '';
+    (b.segments || []).forEach(function (s, i) {
+      var li = document.createElement('li'); li.className = 'seg';
+      var conf = s.confidence != null ? (s.confidence * 100).toFixed(0) + '%' : '—';
+      li.innerHTML =
+        '<span class="t">' + fmtT(s.start) + ' → ' + fmtT(s.end) + '</span>' +
+        '<span class="tx"></span>' +
+        '<span class="conf"><i>' + conf + '</i><span class="bar"><span style="width:' + (s.confidence != null ? Math.round(s.confidence * 100) : 0) + '%"></span></span></span>';
+      li.querySelector('.tx').textContent = s.text;
+      segs.appendChild(li);
+    });
+    var m = b.metrics || {};
+    var cells = [
+      ['Latency', m.latency_seconds != null ? m.latency_seconds.toFixed(2) + ' s' : '—'],
+      ['Engine time', m.engine_seconds != null ? m.engine_seconds.toFixed(2) + ' s' : '—'],
+      ['RTF', m.rtf != null ? m.rtf.toFixed(3) : '—'],
+      ['Audio', m.audio_duration_seconds != null ? m.audio_duration_seconds.toFixed(2) + ' s' : '—'],
+      ['Confidence', m.confidence != null ? (m.confidence * 100).toFixed(1) + '%' : '—'],
+      ['Engine', b.engine || '—'],
+      ['Language', b.language || 'auto'],
+      ['Request id', b.request_id || '—']
+    ];
+    var mc = $('sttMetrics'); mc.innerHTML = '';
+    cells.forEach(function (c) {
+      var d = document.createElement('div'); d.className = 'mcell';
+      d.innerHTML = '<div class="k">' + c[0] + '</div><div class="v"></div>';
+      d.querySelector('.v').textContent = c[1];
+      mc.appendChild(d);
+    });
+    var banner = $('sttBanner'); if (banner) banner.remove();
+  }
+  function fmtT(s) {
+    if (s == null) return '—';
+    return s.toFixed(2) + 's';
+  }
+  function showBanner(cardId, bannerId, title, msg) {
+    var card = $(cardId);
+    var old = $(bannerId); if (old) old.remove();
+    var b = document.createElement('div');
+    b.className = 'banner'; b.id = bannerId;
+    b.innerHTML = '<b>' + title + '</b> — ' + msg;
+    card.insertBefore(b, card.firstChild);
+  }
+
+  $('btnCopy').addEventListener('click', function () {
+    var t = $('sttText').textContent;
+    if (!t || t.indexOf('Nothing transcribed') === 0) return;
+    navigator.clipboard.writeText(t).then(function () { log('copy', 'transcript copied', 'ok'); });
+  });
+
+  /* ================= 02 · LIVE MIC ================= */
+  var ws = null, audioCtx = null, micStream = null, procNode = null, sourceNode = null;
+  var utteranceCount = 0;
+
+  function wsUrl() {
+    var proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    return proto + '://' + location.host + '/v1/ws/transcribe';
+  }
+
+  $('btnMicStart').addEventListener('click', function () {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      showBanner('tab-live', 'liveBanner', 'Microphone unavailable', 'This browser does not expose getUserMedia — try Chrome or Edge on http://localhost.');
+      return;
+    }
+    navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } })
+      .then(function (stream) {
+        micStream = stream;
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        sourceNode = audioCtx.createMediaStreamSource(stream);
+        procNode = audioCtx.createScriptProcessor(4096, 1, 1);
+        var sink = audioCtx.createGain(); sink.gain.value = 0;
+        sourceNode.connect(procNode); procNode.connect(sink);
+
+        ws = new WebSocket(wsUrl());
+        ws.binaryType = 'arraybuffer';
+        ws.onopen = function () {
+          var cfg = { sample_rate: audioCtx.sampleRate };
+          var lang = $('liveLang').value;
+          if (lang) cfg.language = lang;
+          if (API.key) cfg.api_key = API.key;
+          ws.send(JSON.stringify(cfg));
+          setLive(true);
+          log('ws', 'connected /v1/ws/transcribe (sample_rate ' + audioCtx.sampleRate + ')', 'ok');
+        };
+        ws.onmessage = function (ev) {
+          var evt = JSON.parse(ev.data);
+          if (evt.type === 'partial') {
+            $('liveHype').textContent = evt.text || '…';
+          } else if (evt.type === 'final') {
+            $('liveHype').textContent = '';
+            addUtterance(evt);
+          }
+        };
+        ws.onclose = function (ev) {
+          setLive(false);
+          if (ev.code === 1008) showBanner('tab-live', 'liveBanner', 'Connection refused', 'Invalid or missing API key — check the key field.');
+          else if (ev.code === 1011) showBanner('tab-live', 'liveBanner', 'Server error', 'The API closed the stream (1011) — check the API logs.');
+          else log('ws', 'closed (' + ev.code + ')');
+        };
+        ws.onerror = function () { log('ws', 'socket error', 'err'); };
+
+        procNode.onaudioprocess = function (e) {
+          if (!ws || ws.readyState !== 1) return;
+          var ch = e.inputBuffer.getChannelData(0);
+          var buf = new Int16Array(ch.length);
+          for (var i = 0; i < ch.length; i++) {
+            var s = Math.max(-1, Math.min(1, ch[i]));
+            buf[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+          }
+          ws.send(buf);
+        };
+      })
+      .catch(function (err) {
+        showBanner('tab-live', 'liveBanner', 'Microphone access denied', err.name + ' — allow microphone access and retry.');
+        log('mic', 'getUserMedia failed: ' + err.name, 'err');
+      });
+  });
+
+  $('btnMicStop').addEventListener('click', stopMic);
+
+  function stopMic() {
+    if (ws && ws.readyState <= 1) {
+      try { ws.send(JSON.stringify({ action: 'stop' })); } catch (e) {}
+    }
+    if (micStream) micStream.getTracks().forEach(function (t) { t.stop(); });
+    if (procNode) { procNode.onaudioprocess = null; try { procNode.disconnect(); } catch (e) {} }
+    if (sourceNode) { try { sourceNode.disconnect(); } catch (e) {} }
+    if (audioCtx) { try { audioCtx.close(); } catch (e) {} }
+    ws = null; micStream = null; procNode = null; sourceNode = null; audioCtx = null;
+    setLive(false);
+    log('ws', 'stream stopped — final utterance flushed');
+  }
+
+  function setLive(on) {
+    $('btnMicStart').disabled = on;
+    $('btnMicStop').disabled = !on;
+    var ind = $('recInd');
+    ind.classList.toggle('on', on);
+    $('recLabel').textContent = on ? 'listening' : 'idle';
+    $('eq').classList.toggle('off', !on);
+    if (on) { var b = $('liveBanner'); if (b) b.remove(); }
+  }
+
+  function addUtterance(evt) {
+    utteranceCount = Math.max(utteranceCount, evt.utterance_index || 0);
+    var row = document.createElement('div');
+    row.className = 'urow';
+    var conf = evt.confidence != null ? ' · conf ' + (evt.confidence * 100).toFixed(0) + '%' : '';
+    row.innerHTML =
+      '<span class="idx">#' + (evt.utterance_index || '?') + '</span>' +
+      '<span class="txt"></span>' +
+      '<span class="meta">' + fmtT(evt.start) + '–' + fmtT(evt.end) + conf + '</span>';
+    row.querySelector('.txt').textContent = evt.text || '(silence)';
+    $('utterances').appendChild(row);
+    log('ws', 'final #' + (evt.utterance_index || '?') + ' — ' + (evt.text || '').slice(0, 60), 'ok');
+  }
+
+  /* ================= 03 · SYNTHESIZE ================= */
+  var PHRASES = [
+    'Your account balance is one thousand two hundred fifty dollars and fifty cents.',
+    'Please verify the last four digits of your card to continue.',
+    'The interest rate on your fixed deposit is three point five percent per annum.',
+    'We detected unusual activity on your account. Press one to confirm a recent transaction.',
+    'Your branch appointment is scheduled for the fifteenth of August at ten thirty in the morning.'
+  ];
+  var chips = $('phraseChips');
+  PHRASES.forEach(function (p, i) {
+    var c = document.createElement('button');
+    c.type = 'button'; c.className = 'chip';
+    c.textContent = 'Sample ' + (i + 1);
+    c.addEventListener('click', function () { $('ttsText').value = p; countChars(); log('tts', 'sample ' + (i + 1) + ' loaded'); });
+    chips.appendChild(c);
+  });
+
+  function countChars() {
+    var n = $('ttsText').value.length;
+    $('ttsCount').textContent = n + ' / 10000';
+  }
+  $('ttsText').addEventListener('input', countChars);
+  $('speedRange').addEventListener('input', function () {
+    $('speedVal').textContent = parseFloat($('speedRange').value).toFixed(2) + '×';
+  });
+
+  $('btnSpeak').addEventListener('click', function () {
+    var text = $('ttsText').value.trim();
+    if (!text) { log('tts', 'empty text — nothing to synthesize', 'err'); return; }
+    var btn = $('btnSpeak'); btn.disabled = true; btn.textContent = 'Synthesizing…';
+    var body = {
+      text: text,
+      speed: parseFloat($('speedRange').value),
+      voice: $('voiceSel').value || null
+    };
+    var t0 = performance.now();
+    log('tts', 'POST /v1/synthesize — ' + text.length + ' chars @ ' + body.speed + '× ' + (body.voice || 'default'));
+
+    fetch('/v1/synthesize', {
+      method: 'POST',
+      headers: API.headers(),
+      body: JSON.stringify(body)
+    }).then(function (r) {
+      if (!r.ok) {
+        return r.json().then(function (b) {
+          throw { code: b && b.error ? b.error.code : 'http_' + r.status, message: apiError(b, r.status), status: r.status };
+        });
+      }
+      return r.blob();
+    }).then(function (blob) {
+      var url = URL.createObjectURL(blob);
+      var audio = $('ttsAudio');
+      audio.src = url;
+      $('btnDownload').href = url;
+      $('ttsPlayerCard').hidden = false;
+      var secs = ((performance.now() - t0) / 1000).toFixed(2);
+      var dur = '';
+      audio.onloadedmetadata = function () {
+        dur = ' · ' + (audio.duration ? audio.duration.toFixed(1) : '?') + 's audio';
+        $('ttsMeta').textContent = 'Synthesized in ' + secs + 's' + dur + ' · ' + (body.voice || 'default voice') + ' @ ' + body.speed + '×';
+      };
+      audio.play().catch(function () {});
+      log('tts', '200 — ' + blob.size + ' bytes wav in ' + secs + 's', 'ok');
+    }).catch(function (err) {
+      var hint = err.status === 503 ? 'Models are missing — run `python scripts/download_models.py` on the host, then restart the API.' : (err.status === 401 ? 'Add the API key in the top-right corner.' : '');
+      showBanner('tab-synth', 'ttsBanner', 'Synthesis failed', err.code + ' — ' + err.message + (hint ? ' ' + hint : ''));
+      log('tts', (err.code || err.message), 'err');
+    }).finally(function () { btn.disabled = false; btn.textContent = 'Speak it'; });
+  });
+
+  $('btnPlay').addEventListener('click', function () {
+    var a = $('ttsAudio');
+    if (a.paused) { a.play().catch(function () {}); $('btnPlay').textContent = '⏸ Pause'; }
+    else { a.pause(); $('btnPlay').textContent = '▶ Play'; }
+  });
+  $('ttsAudio').addEventListener('ended', function () { $('btnPlay').textContent = '▶ Play'; });
+
+  /* ---------------- init ---------------- */
+  countChars();
+  $('sess').textContent = 'session ' + sessId;
+  log('boot', 'console ready — session ' + sessId + ' (' + (location.origin || 'local') + ')');
+  refreshStatus();
+  setInterval(refreshStatus, 20000);
+})();
+</script>
+</body>
+</html>
