@@ -69,6 +69,11 @@ speechai-finetune = "speechai.finetune.train:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# Non-code assets that must ship with the installed package (Docker image
+# installs non-editable): the browser demo console served at "/".
+[tool.setuptools.package-data]
+"speechai.api.ui" = ["index.html"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
