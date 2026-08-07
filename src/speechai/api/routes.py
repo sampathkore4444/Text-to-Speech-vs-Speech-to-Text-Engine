@@ -38,6 +38,7 @@ async def transcribe(
     file: UploadFile = File(...),
     language: str | None = Form(None),
     redact: bool = Form(True),
+    vad_filter: bool | None = Form(None),
 ) -> TranscribeResponse:
     settings = request.app.state.settings
     pipeline = request.app.state.pipeline
@@ -45,9 +46,12 @@ async def transcribe(
     _validate_upload(content, settings.api.max_upload_mb)
     path = settings.uploads_dir / f"{uuid.uuid4().hex}.wav"
     path.write_bytes(content)
-    logger.info("transcribe request", extra={"size_bytes": len(content), "language": language})
+    logger.info(
+        "transcribe request",
+        extra={"size_bytes": len(content), "language": language, "vad_filter": vad_filter},
+    )
     payload = await asyncio.to_thread(
-        pipeline.transcribe_sync, path, language=language, redact=redact
+        pipeline.transcribe_sync, path, language=language, redact=redact, vad_filter=vad_filter
     )
     return TranscribeResponse(**payload, request_id=get_request_id())
 
@@ -90,6 +94,7 @@ async def submit_transcribe_job(
     file: UploadFile = File(...),
     language: str | None = Form(None),
     redact: bool = Form(True),
+    vad_filter: bool | None = Form(None),
 ) -> JobSubmitResponse:
     settings = request.app.state.settings
     pipeline = request.app.state.pipeline
@@ -97,7 +102,7 @@ async def submit_transcribe_job(
     _validate_upload(content, settings.api.max_upload_mb)
     path = settings.uploads_dir / f"{uuid.uuid4().hex}.wav"
     path.write_bytes(content)
-    job = await pipeline.submit_transcribe(path, language=language, redact=redact)
+    job = await pipeline.submit_transcribe(path, language=language, redact=redact, vad_filter=vad_filter)
     logger.info("transcribe job submitted", extra={"job_id": job.id})
     return JobSubmitResponse(job_id=job.id, status=job.status.value, url=f"/v1/jobs/{job.id}")
 

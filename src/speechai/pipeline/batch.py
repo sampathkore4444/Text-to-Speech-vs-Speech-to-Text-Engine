@@ -103,11 +103,17 @@ class BatchPipeline:
         *,
         language: str | None = None,
         redact: bool = True,
+        vad_filter: bool | None = None,
     ) -> Job:
         job = Job(
             id=new_job_id(),
             type=JobType.transcribe,
-            input={"audio_path": str(audio_path), "language": language, "redact": redact},
+            input={
+                "audio_path": str(audio_path),
+                "language": language,
+                "redact": redact,
+                "vad_filter": vad_filter,
+            },
         )
         await self.queue.enqueue(job)
         return job
@@ -176,6 +182,7 @@ class BatchPipeline:
         *,
         language: str | None = None,
         redact: bool = True,
+        vad_filter: bool | None = None,
     ) -> dict[str, Any]:
         stopwatch = Stopwatch()
         audio = load_audio(audio_path)
@@ -183,7 +190,7 @@ class BatchPipeline:
         options = STTOptions(
             language=language or self.settings.stt.language,
             beam_size=self.settings.stt.beam_size,
-            vad_filter=self.settings.stt.vad_filter,
+            vad_filter=self.settings.stt.vad_filter if vad_filter is None else vad_filter,
         )
         result = self.stt_engine.transcribe(asr_audio, options)
         processed = self.postprocessor.process(result.text, redact=redact) if redact else None
@@ -253,6 +260,7 @@ class BatchPipeline:
             Path(job.input["audio_path"]),
             language=job.input.get("language"),
             redact=bool(job.input.get("redact", True)),
+            vad_filter=job.input.get("vad_filter"),
         )
 
     def _execute_synthesize(self, job: Job) -> dict[str, Any]:

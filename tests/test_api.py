@@ -128,6 +128,53 @@ def test_transcribe_returns_sentence_segments(settings, fake_tts, sample_audio) 
     assert body["segments"][1]["end"] == 6.0
 
 
+def test_transcribe_vad_filter_form_param_reaches_engine(client, sample_audio, fake_stt) -> None:
+    """The multipart vad_filter field must override the engine options."""
+    with open(sample_audio, "rb") as fh:
+        response = client.post(
+            "/v1/transcribe",
+            files={"file": ("sample.wav", fh, "audio/wav")},
+            data={"vad_filter": "false"},
+        )
+    assert response.status_code == 200
+    assert fake_stt.last_options is not None
+    assert fake_stt.last_options.vad_filter is False
+
+
+def test_transcribe_vad_filter_defaults_from_settings(client, sample_audio, fake_stt) -> None:
+    """Omitted vad_filter falls back to settings.stt.vad_filter (default False)."""
+    with open(sample_audio, "rb") as fh:
+        response = client.post(
+            "/v1/transcribe", files={"file": ("sample.wav", fh, "audio/wav")}
+        )
+    assert response.status_code == 200
+    assert fake_stt.last_options is not None
+    assert fake_stt.last_options.vad_filter is False
+
+
+def test_transcribe_vad_filter_enable(client, sample_audio, fake_stt) -> None:
+    """vad_filter=true must be forwarded as True."""
+    with open(sample_audio, "rb") as fh:
+        response = client.post(
+            "/v1/transcribe",
+            files={"file": ("sample.wav", fh, "audio/wav")},
+            data={"vad_filter": "true"},
+        )
+    assert response.status_code == 200
+    assert fake_stt.last_options is not None
+    assert fake_stt.last_options.vad_filter is True
+
+
+def test_transcribe_sync_vad_filter_wiring(pipeline, sample_audio, fake_stt) -> None:
+    """Pipeline-level override: explicit value wins, omitted uses settings default."""
+    pipeline.transcribe_sync(sample_audio, vad_filter=True)
+    assert fake_stt.last_options is not None and fake_stt.last_options.vad_filter is True
+    pipeline.transcribe_sync(sample_audio, vad_filter=False)
+    assert fake_stt.last_options.vad_filter is False
+    pipeline.transcribe_sync(sample_audio)
+    assert fake_stt.last_options.vad_filter is False  # settings.stt.vad_filter default
+
+
 def test_transcribe_redacts_pii(client, sample_audio, fake_stt) -> None:
     fake_stt.text = "My card is 4242 4242 4242 4242"
     with open(sample_audio, "rb") as fh:

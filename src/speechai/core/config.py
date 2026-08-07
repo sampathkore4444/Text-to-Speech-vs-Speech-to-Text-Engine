@@ -51,7 +51,10 @@ class STTConfig(BaseModel):
     compute_type: str = "auto"
     beam_size: int = 5
     language: str | None = None
-    vad_filter: bool = True
+    # Default OFF: faster-whisper's silero VAD rejects speech that isn't
+    # clean (music-overlaid vocals, noise, quiet mics), which truncates files
+    # to a few words. Transcribe everything unless the caller opts in.
+    vad_filter: bool = False
     min_silence_ms: int = 500
     max_segment_ms: int = 12000
     partial_interval_ms: int = 2500

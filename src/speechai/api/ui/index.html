@@ -370,6 +370,9 @@
         <label class="switch" style="margin-top:16px">
           <input type="checkbox" id="redactToggle" checked /> Redact PII in the transcript
         </label>
+        <label class="switch" style="margin-top:16px" title="Off = transcribe everything (default). On = only clean speech — may skip music, background noise or quiet recordings.">
+          <input type="checkbox" id="vadToggle" /> Voice-activity filter
+        </label>
         <button class="btn primary" id="btnTranscribe" style="margin-left:auto" disabled>Transcribe audio</button>
       </div>
     </div>
@@ -580,9 +583,10 @@
     var lang = $('langSel').value;
     if (lang) fd.append('language', lang);
     fd.append('redact', $('redactToggle').checked ? 'true' : 'false');
+    fd.append('vad_filter', $('vadToggle').checked ? 'true' : 'false');
     var headers = API.key ? { 'X-API-Key': API.key } : {};
     var t0 = performance.now();
-    log('stt', 'POST /v1/transcribe — ' + chosenFile.name + ' (redact=' + $('redactToggle').checked + ')');
+    log('stt', 'POST /v1/transcribe — ' + chosenFile.name + ' (redact=' + $('redactToggle').checked + ', vad_filter=' + $('vadToggle').checked + ')');
 
     fetch('/v1/transcribe', { method: 'POST', headers: headers, body: fd })
       .then(function (r) {

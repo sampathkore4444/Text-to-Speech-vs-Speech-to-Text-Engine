@@ -42,6 +42,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_transcribe.add_argument("audio", help="Path to audio file (wav/mp3/flac/...)")
     p_transcribe.add_argument("--language", default=None, help="Override language (e.g. en)")
     p_transcribe.add_argument("--no-redact", action="store_true", help="Disable PII redaction")
+    p_transcribe.add_argument(
+        "--vad",
+        dest="vad_filter",
+        action="store_true",
+        default=None,
+        help="Enable the voice-activity filter (clean speech only; may drop noisy audio)",
+    )
+    p_transcribe.add_argument(
+        "--no-vad",
+        dest="vad_filter",
+        action="store_false",
+        help="Disable the voice-activity filter (transcribe everything; default)",
+    )
     p_transcribe.add_argument("--json", action="store_true", help="Emit raw JSON")
 
     p_synthesize = sub.add_parser("synthesize", help="Synthesize speech from text")
@@ -86,7 +99,9 @@ def main(argv: list[str] | None = None) -> int:
 def _transcribe(args: argparse.Namespace, settings: Settings, redactor: Redactor) -> int:
     engine = build_stt_engine(settings)
     audio = to_asr_audio(load_audio(args.audio))
-    result = engine.transcribe(audio, STTOptions(language=args.language))
+    result = engine.transcribe(
+        audio, STTOptions(language=args.language, vad_filter=args.vad_filter)
+    )
     processed = TextPostProcessor(redactor).process(result.text, redact=not args.no_redact)
 
     if args.json:

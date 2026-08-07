@@ -239,7 +239,7 @@ apply every `SPEECHAI_*` env var over the tree → validate with Pydantic.
 | | `compute_type` | `auto` | `auto` → `int8` on CPU, `float16` on CUDA |
 | | `beam_size` | `5` | Whisper beam search width |
 | | `language` | `null` | `null` = auto-detect; pin e.g. `en` for lower latency |
-| | `vad_filter` | `true` | faster-whisper built-in VAD |
+| | `vad_filter` | `false` | faster-whisper built-in silero VAD. **Off by default** because it silently discards non-clean speech (music-overlaid vocals, noise, quiet mics) and truncates files. Opt in per request: UI checkbox, curl `-F vad_filter=true`, CLI `--vad` |
 | | `min_silence_ms` | `500` | Silence that closes a streaming utterance |
 | | `max_segment_ms` | `12000` | Hard cap on one streaming utterance |
 | | `partial_interval_ms` | `2500` | Cadence of `partial` (non-final) events |
@@ -301,7 +301,7 @@ formats; these diagrams show *who calls whom, when*.
 ```text
  Client            Auth MW            Observability MW      Route /v1/transcribe    BatchPipeline           STT Engine
    │                  │                     │                     │                   │                        │
-   │ 1) POST /v1/transcribe (multipart: file, language, redact) + X-API-Key (if auth on)
+   │ 1) POST /v1/transcribe (multipart: file, language, redact, vad_filter) + X-API-Key (if auth on)
    ├─────────────────►│                     │                     │                   │                        │
    │                  │ 2) key valid?       │                     │                   │                        │
    │                  │    wrong → 401 {'error':{'code':'unauthorized',...}}
@@ -539,7 +539,12 @@ Everything below happens inside `BatchPipeline.transcribe_sync` (sync REST) or
    float32** using `soxr` when installed (high quality), otherwise a documented
    linear-interpolation fallback.
 3. **Inference options** — `STTOptions(language, beam_size, vad_filter)` built
-   from per-request overrides and `settings.stt`.
+   from per-request overrides and `settings.stt`. `vad_filter` is **off by
+   default** (`stt.vad_filter: false`): the silero filter only keeps "clean"
+   speech, so music-overlaid or noisy audio would otherwise be truncated to a
+   few words. Callers who know their audio is clean speech can re-enable it
+   per request (`POST /v1/transcribe` form field `vad_filter=true`,
+   `POST /v1/jobs/transcribe`, CLI `--vad`).
 4. **Engine** — `WhisperSTTEngine` (lazy singleton, thread-safe for sequential
    calls, guarded by a lock):
    - `load()`: `WhisperModel(model_ref, device, compute_type)`. `model_ref` is

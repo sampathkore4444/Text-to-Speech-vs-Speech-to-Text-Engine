@@ -101,9 +101,11 @@ curl http://localhost:8000/metrics
 curl http://localhost:8000/v1/models
 
 # --- Sync STT (multipart) -------------------------------------------------
+# vad_filter defaults to OFF (transcribe everything, incl. music/noisy audio).
+# Add -F "vad_filter=true" only for clean speech recordings.
 curl -X POST http://localhost:8000/v1/transcribe \
   -H "X-API-Key: $KEY" \
-  -F "file=@call.wav" -F "language=en" -F "redact=true"
+  -F "file=@call.wav" -F "language=en" -F "redact=true" -F "vad_filter=false"
 
 # --- Sync TTS (JSON -> WAV) ------------------------------------------------
 curl -X POST http://localhost:8000/v1/synthesize \
@@ -116,7 +118,7 @@ curl -N -X POST "http://localhost:8000/v1/synthesize?stream=true" \
 
 # --- Async batch: submit -> poll -> artifact -> delete ----------------------
 curl -X POST http://localhost:8000/v1/jobs/transcribe \
-  -H "X-API-Key: $KEY" -F "file=@call.wav" -F "redact=true"
+  -H "X-API-Key: $KEY" -F "file=@call.wav" -F "redact=true" -F "vad_filter=false"
 # -> {"job_id": "9f8e7d6c5b4a3210", "status": "queued", "url": "/v1/jobs/9f8e7d6c5b4a3210"}
 
 curl -s http://localhost:8000/v1/jobs/9f8e7d6c5b4a3210 | jq .status
@@ -203,6 +205,7 @@ export SPEECHAI_STT__MODEL_PATH=data/models/finetuned/ct2
 | `SPEECHAI_API__PORT=9000` | Change API port |
 | `SPEECHAI_STT__MODEL_SIZE=small` | STT model (tiny→large-v3) |
 | `SPEECHAI_STT__MODEL_PATH=data/models/finetuned/ct2` | Use a local CTranslate2 model |
+| `SPEECHAI_STT__VAD_FILTER=false` | Silero VAD filter (`false` = transcribe everything, default) |
 | `SPEECHAI_TTS__VOICE=en_US-amy-medium` | Piper voice |
 | `SPEECHAI_QUEUE__BACKEND=redis` | Redis queue for multi-process/multi-worker |
 | `SPEECHAI_QUEUE__REDIS_URL=redis://localhost:6379/0` | Redis URL |
@@ -221,6 +224,7 @@ export SPEECHAI_STT__MODEL_PATH=data/models/finetuned/ct2
 | WebSocket closes `1008` | Pass `api_key` inside the first JSON message |
 | HTTP 413 | Upload > 50 MB (`api.max_upload_mb`) |
 | Slow first request | Model downloads/loads lazily — warm with `download_models.py --whisper-size base` |
+| Transcript only has one short line / skips most of a file | The silero VAD filter dropped non-clean speech — transcribe with `vad_filter=false` (UI checkbox, curl `-F vad_filter=false`, or CLI `--no-vad`) |
 
 ---
 

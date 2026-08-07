@@ -41,7 +41,12 @@ stt:
   compute_type: "auto"         # auto | int8 | float16 | float32
   beam_size: 5
   language: null               # null = auto-detect (set e.g. "en" for latency)
-  vad_filter: true             # faster-whisper built-in VAD
+  vad_filter: false            # faster-whisper built-in silero VAD. Default OFF:
+                               # it silently discards non-clean speech (music,
+                               # background noise, quiet mics), truncating files.
+                               # Set true only for clean speech recordings.
+                               # Overridable per request: UI checkbox, curl
+                               # -F vad_filter=..., CLI --vad / --no-vad.
   min_silence_ms: 500          # segment boundary for streaming transcription
   max_segment_ms: 12000        # hard cap on a single streaming utterance
   partial_interval_ms: 2500    # cadence of partial (non-final) results

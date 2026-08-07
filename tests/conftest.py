@@ -24,12 +24,14 @@ class FakeSTTEngine:
         self.text = text
         self.latency = 0.005
         self.calls = 0
+        self.last_options: STTOptions | None = None
 
     def load(self) -> None:
         pass
 
     def transcribe(self, audio, options: STTOptions | None = None) -> TranscriptionResult:
         self.calls += 1
+        self.last_options = options
         time.sleep(self.latency)
         segment = Segment(text=self.text, start=0.0, end=audio.duration_seconds, confidence=0.95)
         language = (options.language if options else None) or "en"

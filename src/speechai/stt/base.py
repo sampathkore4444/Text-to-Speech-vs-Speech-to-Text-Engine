@@ -16,7 +16,8 @@ class STTOptions:
 
     language: str | None = None
     beam_size: int = 5
-    vad_filter: bool = True
+    # None = follow the engine config; True/False override per request.
+    vad_filter: bool | None = None
     task: str = "transcribe"  # "transcribe" | "translate"
 
 
