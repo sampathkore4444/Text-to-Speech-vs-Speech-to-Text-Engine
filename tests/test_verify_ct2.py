@@ -236,6 +236,8 @@ def test_check_batch_path_ok(tmp_path: Path):
     assert result["ok"] is True
     assert result["status"] == "succeeded"
     assert result["text_length"] == len("hello bank customer")
+    # The check runs on an isolated temp data dir - no stray uploads/jobs.
+    assert not (tmp_path / "data").exists()
 
 
 def test_check_ws_path_ok(tmp_path: Path):
@@ -243,7 +245,7 @@ def test_check_ws_path_ok(tmp_path: Path):
     settings = _spot_settings(tmp_path)
     audio = tmp_path / "tone.wav"
     write_wav(audio, generate_sine(0.5, 16000, freq=300))
-    result = verify._check_ws_path(settings, audio, stt_engine=_FakeSpotSTT())
+    result = verify._check_ws_path(settings, audio, stt_engine=_FakeSpotSTT(), energy_vad=True)
     assert result["ok"] is True
     assert result["finals"] >= 1
 
