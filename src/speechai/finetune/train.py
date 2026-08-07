@@ -358,9 +358,13 @@ def _run(config: TrainConfig, tracker: ExperimentTracker) -> None:
             input_features = batch["input_features"].to(device)
             labels = batch["labels"].to(device)
             outputs = _forward(model, input_features=input_features, labels=labels)
+            # The loss actually optimized is scaled by grad-accum; report and
+            # accumulate that same value so the per-step log, the epoch mean
+            # and the backprop are all consistent (identical when
+            # grad_accum_steps == 1).
             loss = outputs.loss / config.grad_accum_steps
             loss.backward()
-            epoch_loss += float(outputs.loss.item())
+            epoch_loss += float(loss.item())
 
             if (global_step + 1) % config.grad_accum_steps == 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -373,7 +377,7 @@ def _run(config: TrainConfig, tracker: ExperimentTracker) -> None:
                 logger.info(
                     "step %d  loss %.4f  lr %.2e",
                     global_step,
-                    outputs.loss.item(),
+                    loss.item(),
                     scheduler.get_last_lr()[0],
                 )
             if config.save_every_steps > 0 and global_step % config.save_every_steps == 0:
