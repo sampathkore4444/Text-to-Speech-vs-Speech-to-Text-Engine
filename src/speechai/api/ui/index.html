@@ -662,7 +662,7 @@
 
   /* ================= 02 · LIVE MIC ================= */
   var ws = null, audioCtx = null, micStream = null, procNode = null, sourceNode = null;
-  var utteranceCount = 0;
+  var utteranceCount = 0, micFrames = 0, serverErrorShown = false;
 
   function wsUrl() {
     var proto = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -674,10 +674,28 @@
       showBanner('tab-live', 'liveBanner', 'Microphone unavailable', 'This browser does not expose getUserMedia — try Chrome or Edge on http://localhost.');
       return;
     }
+    // Create the AudioContext synchronously inside the click handler so it
+    // inherits the user gesture. Chrome keeps contexts created in async
+    // callbacks (e.g. inside a getUserMedia().then) in the "suspended" state,
+    // and a suspended context never delivers audio to the processing node - the
+    // classic silent-mic bug where the page shows "listening" but sends no audio.
+    var ctx;
+    try {
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+    } catch (e) {
+      showBanner('tab-live', 'liveBanner', 'Audio unavailable', e.message);
+      return;
+    }
+    log('mic', 'AudioContext created (' + ctx.state + ' @ ' + ctx.sampleRate + ' Hz)');
+    if (ctx.state === 'suspended') {
+      ctx.resume().catch(function () {});
+    }
+    micFrames = 0;
+    serverErrorShown = false;
     navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } })
       .then(function (stream) {
         micStream = stream;
-        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        audioCtx = ctx;
         sourceNode = audioCtx.createMediaStreamSource(stream);
         procNode = audioCtx.createScriptProcessor(4096, 1, 1);
         var sink = audioCtx.createGain(); sink.gain.value = 0;
@@ -701,18 +719,27 @@
           } else if (evt.type === 'final') {
             $('liveHype').textContent = '';
             addUtterance(evt);
+          } else if (evt.type === 'error') {
+            serverErrorShown = true;
+            var hint = evt.code === 'model_not_found' ? ' Models are missing — run `python scripts/download_models.py` on the host.' : '';
+            showBanner('tab-live', 'liveBanner', 'Stream error', (evt.code || 'error') + ' — ' + (evt.message || '') + hint);
+            log('ws', 'server error: ' + (evt.code || '?') + ' — ' + (evt.message || ''), 'err');
           }
         };
         ws.onclose = function (ev) {
           setLive(false);
           if (ev.code === 1008) showBanner('tab-live', 'liveBanner', 'Connection refused', 'Invalid or missing API key — check the key field.');
-          else if (ev.code === 1011) showBanner('tab-live', 'liveBanner', 'Server error', 'The API closed the stream (1011) — check the API logs.');
+          // A server error event already carries the precise message - do not
+          // overwrite it with the generic 1011 text.
+          else if (ev.code === 1011 && !serverErrorShown) showBanner('tab-live', 'liveBanner', 'Server error', 'The API closed the stream (1011) — check the API logs.');
           else log('ws', 'closed (' + ev.code + ')');
         };
         ws.onerror = function () { log('ws', 'socket error', 'err'); };
 
         procNode.onaudioprocess = function (e) {
           if (!ws || ws.readyState !== 1) return;
+          if (micFrames === 0) log('mic', 'audio frames flowing — sending PCM @ ' + audioCtx.sampleRate + ' Hz', 'ok');
+          micFrames++;
           var ch = e.inputBuffer.getChannelData(0);
           var buf = new Int16Array(ch.length);
           for (var i = 0; i < ch.length; i++) {
@@ -725,6 +752,7 @@
       .catch(function (err) {
         showBanner('tab-live', 'liveBanner', 'Microphone access denied', err.name + ' — allow microphone access and retry.');
         log('mic', 'getUserMedia failed: ' + err.name, 'err');
+        if (ctx) { try { ctx.close(); } catch (e) {} }
       });
   });
 

@@ -664,6 +664,13 @@ WAV artifact.
 `speech_ws_active{kind}`; unexpected failures close with code **1011**, auth
 failures with **1008**.
 
+**Fail-fast model loading:** after the first JSON message the handler loads the
+engine eagerly (`engine.load()` in a worker thread). A missing/unavailable
+model therefore fails **immediately** — the server sends one JSON `error` event
+(`{"type": "error", "code": "model_not_found", "message": "..."}`) and then
+closes with `1011`. Without this, a lazy load would silently download the model
+mid-stream, leaving the client with a hung connection and no feedback.
+
 **ASR: `/v1/ws/transcribe`**
 
 1. Client connects and immediately sends one JSON **config message**:
@@ -1259,7 +1266,7 @@ Per-container control: `docker compose stop api worker`,
 | HTTP 413 | Upload > `api.max_upload_mb` (default 50 MB) |
 | HTTP 503 `model_not_found` / `engine_unavailable` | Model missing or `faster-whisper`/`piper-tts` not installed |
 | Slow first request | Model download/load is lazy; subsequent requests are fast. Consider `scripts/download_models.py --whisper-size <size>` to warm |
-| Whisper re-downloads in Docker | HF cache is inside the container; use `stt.model_path` to a mounted dir or add an HF-cache volume |
+| Whisper re-downloads in Docker | Compose sets `HF_HOME=/data/hf-cache` (the mounted `./data`), so the cache survives rebuilds — it only re-downloads if you delete `data/hf-cache` |
 | `webrtcvad` missing | `vad.backend=energy` works without it; or install engines extra |
 | Port 8000 already in use | Change `api.port` / `--port`, or find & kill the stale process (Section 7.1.6) |
 | Queue backlog alert | Scale workers: `docker compose up --scale worker=N -d` |

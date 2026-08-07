@@ -83,7 +83,9 @@ docker compose restart       # restart without rebuild
 ```
 
 > **Before first `docker compose up`:** run `python scripts/download_models.py`
-> on the host — the container sees models via the `./data` bind mount.
+> on the host — the container sees models via the `./data` bind mount. In
+> Docker the Whisper cache is kept in `./data/hf-cache` (`HF_HOME=/data/hf-cache`),
+> so it survives rebuilds too.
 
 ---
 
@@ -156,6 +158,10 @@ receive `{"type": "partial"|"final", "text": ..., ...}` → send `{"action":
 **Formal spec:** `docs/ws-protocol.md` — full JSON Schemas, framing, close
 codes, examples. Both WS endpoints also appear in Swagger UI (`/docs`) via the
 injected `x-websocket` OpenAPI extension (`GET /openapi.json`).
+
+> Server failures arrive as a JSON `error` event (e.g. `model_not_found`)
+> before the socket closes with `1011` — the demo console shows them as a
+> banner instead of hanging silently.
 
 Minimal Python client:
 

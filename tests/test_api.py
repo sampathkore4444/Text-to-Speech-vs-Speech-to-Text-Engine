@@ -8,6 +8,7 @@ import threading
 import time
 
 import numpy as np
+import pytest
 from fastapi.testclient import TestClient
 
 from speechai.api.app import create_app
@@ -241,6 +242,68 @@ def test_ws_synthesize_stream(client, fake_tts) -> None:
                 break
     assert len(chunks) == 2
     assert chunks[0][:4] == b"RIFF"
+
+
+def test_ws_transcribe_fails_fast_on_missing_model(settings, fake_tts) -> None:
+    """A missing STT model must surface as an error event, not a silent hang."""
+    from starlette.websockets import WebSocketDisconnect
+
+    from speechai.core.errors import ModelNotFoundError
+
+    class BrokenSTT:
+        name = "broken-stt"
+
+        def load(self) -> None:
+            raise ModelNotFoundError("Whisper model not found in test env")
+
+        def transcribe(self, audio, options=None):  # pragma: no cover - never reached
+            raise AssertionError("transcribe must not run when load fails")
+
+        def close(self) -> None:
+            pass
+
+    app = create_app(settings, stt_engine=BrokenSTT(), tts_engine=fake_tts)
+    with TestClient(app) as client:
+        with client.websocket_connect("/v1/ws/transcribe") as ws:
+            ws.send_json({"sample_rate": 16000})
+            error = ws.receive_json()
+            assert error["type"] == "error"
+            assert error["code"] == "model_not_found"
+            with pytest.raises(WebSocketDisconnect) as exc_info:
+                while True:
+                    ws.receive_json()
+            assert exc_info.value.code == 1011
+
+
+def test_ws_synthesize_fails_fast_on_missing_model(settings, fake_stt) -> None:
+    """A missing TTS voice must surface as an error event, not a silent hang."""
+    from starlette.websockets import WebSocketDisconnect
+
+    from speechai.core.errors import ModelNotFoundError
+
+    class BrokenTTS:
+        name = "broken-tts"
+
+        def load(self) -> None:
+            raise ModelNotFoundError("Piper voice not found in test env")
+
+        def synthesize(self, text, options=None):  # pragma: no cover - never reached
+            raise AssertionError("synthesize must not run when load fails")
+
+        def close(self) -> None:
+            pass
+
+    app = create_app(settings, stt_engine=fake_stt, tts_engine=BrokenTTS())
+    with TestClient(app) as client:
+        with client.websocket_connect("/v1/ws/synthesize") as ws:
+            ws.send_json({"text": "Hello"})
+            error = ws.receive_json()
+            assert error["type"] == "error"
+            assert error["code"] == "model_not_found"
+            with pytest.raises(WebSocketDisconnect) as exc_info:
+                while True:
+                    ws.receive_json()
+            assert exc_info.value.code == 1011
 
 
 # ---------------------------------------------------------------------------

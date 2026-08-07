@@ -16,6 +16,9 @@ services:
       SPEECHAI_QUEUE__REDIS_URL: redis://redis:6379/0
       SPEECHAI_STORAGE__DATA_DIR: /data
       SPEECHAI_API__API_KEY: ${SPEECHAI_API__API_KEY:-}
+      # Keep faster-whisper's HuggingFace cache in the mounted ./data dir so
+      # model downloads survive container rebuilds.
+      HF_HOME: /data/hf-cache
     volumes:
       - ./data:/data
       - ./configs:/app/configs:ro
@@ -36,6 +39,7 @@ services:
       SPEECHAI_QUEUE__BACKEND: redis
       SPEECHAI_QUEUE__REDIS_URL: redis://redis:6379/0
       SPEECHAI_STORAGE__DATA_DIR: /data
+      HF_HOME: /data/hf-cache
     volumes:
       - ./data:/data
       - ./configs:/app/configs:ro

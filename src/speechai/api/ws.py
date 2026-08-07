@@ -44,8 +44,12 @@ async def ws_transcribe(websocket: WebSocket) -> None:
         partial_interval_ms = int(
             first.get("partial_interval_ms") or settings.stt.partial_interval_ms
         )
-        # Engine loading blocks; do it off the event loop.
+        # Engine loading blocks; do it off the event loop. Load eagerly so a
+        # missing/unavailable model fails fast with a clear error instead of
+        # hanging the stream on the first utterance (a lazy load would silently
+        # download the model mid-stream with no feedback to the client).
         engine = await asyncio.to_thread(lambda: pipeline.stt_engine)
+        await asyncio.to_thread(engine.load)
         transcriber = StreamingTranscriber(
             engine,
             language=language,
@@ -79,8 +83,18 @@ async def ws_transcribe(websocket: WebSocket) -> None:
                 pass
     except UnauthorizedError:
         await websocket.close(code=1008)
-    except Exception:
+    except Exception as exc:
         logger.exception("streaming transcription error")
+        try:
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "code": getattr(exc, "error_code", "internal_error"),
+                    "message": str(exc),
+                }
+            )
+        except Exception:
+            pass  # client already gone; nothing to deliver
         await websocket.close(code=1011)
     finally:
         metrics.ws_active.labels("transcribe").dec()
@@ -100,6 +114,8 @@ async def ws_synthesize(websocket: WebSocket) -> None:
         if not text.strip():
             raise ValueError("text must not be empty")
         engine = await asyncio.to_thread(lambda: pipeline.tts_engine)
+        # Same eager-load rationale as ws_transcribe: fail fast on missing models.
+        await asyncio.to_thread(engine.load)
         synthesizer = StreamingSynthesizer(engine, speed=float(config.get("speed", 1.0)))
         chunks = 0
         async for chunk in synthesizer.synthesize(text):
@@ -111,8 +127,18 @@ async def ws_synthesize(websocket: WebSocket) -> None:
         pass
     except UnauthorizedError:
         await websocket.close(code=1008)
-    except Exception:
+    except Exception as exc:
         logger.exception("streaming synthesis error")
+        try:
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "code": getattr(exc, "error_code", "internal_error"),
+                    "message": str(exc),
+                }
+            )
+        except Exception:
+            pass  # client already gone; nothing to deliver
         await websocket.close(code=1011)
     finally:
         metrics.ws_active.labels("synthesize").dec()

@@ -316,9 +316,44 @@ asyncio.run(stream_tts("Hello. Goodbye."))
 |---|---|---|
 | Missing/wrong `api_key` (first JSON message) | both | `1008` |
 | First transcribe message is not JSON, or config invalid | transcribe | `1011` |
-| Engine load/transcription/synthesis failure | both | `1011` (+ `speech_errors_total` counter, logged with `request_id`) |
+| Engine load/transcription/synthesis failure | both | `error` JSON event (see §4.1), then `1011` (+ `speech_errors_total` counter, logged with `request_id`) |
 | Empty `text` on synthesize | synthesize | `1011` (server raises before streaming) |
 | Client disconnects mid-stream | both | best-effort flush of pending finals; server closes |
+
+### 4.1 Error event (shared by both endpoints)
+
+Before closing with `1011` for a server-side failure, the server sends **one**
+JSON text frame describing the failure so clients can surface a precise
+message instead of a bare close code. The engine is loaded eagerly after the
+config/request message, so a missing model (or any load failure) is reported
+immediately — the stream never hangs silently.
+
+```json
+{ "type": "error", "code": "model_not_found", "message": "Piper voice model not found at /data/models/voices/....onnx. Run `python scripts/download_models.py --piper-voice en_US-lessac-medium`." }
+```
+
+| Field | Type | Meaning |
+|---|---|---|
+| `type` | string | Always `"error"` |
+| `code` | string | Stable error code, e.g. `model_not_found`, `unauthorized`, `internal_error` (mirrors the REST `error.code` vocabulary) |
+| `message` | string | Human-readable description |
+
+**Schema (JSON Schema draft 2020-12):**
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bank-speech-ai/schemas/ws-error.json",
+  "title": "WebSocketErrorEvent",
+  "type": "object",
+  "required": ["type", "code", "message"],
+  "properties": {
+    "type": {"const": "error"},
+    "code": {"type": "string"},
+    "message": {"type": "string"}
+  }
+}
+```
 
 After an error close the connection is gone — clients should reconnect (with
 backoff) for resilience.
