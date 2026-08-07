@@ -703,6 +703,20 @@ torch/transformers — so it runs on the same host that serves the model. Pass
 optional MLflow logging via `--mlflow-tracking-uri` (or `--no-mlflow`). In CI,
 run it with `--max-wer-gap` tightened and treat exit 1 as a failed promotion.
 
+**Serving-path spot checks.** The offline WER numbers only prove the model
+itself; the script also pushes audio through the **other two serving paths** of
+the real API (in-process, reusing the already-loaded engine so the model is not
+loaded twice):
+
+- **Batch job** — `POST /v1/jobs/transcribe` → worker run → status route.
+- **WebSocket streaming** — `/v1/ws/transcribe` with VAD-gated `final` events.
+
+The audio comes from `--sample-audio`, else the first manifest utterance, else
+a generated tone. Both checks are **on by default** (`--no-batch-check` /
+`--no-ws-check` disable them) and a failing spot check blocks the swap (exit 1)
+exactly like a breached gate — so a model whose serving path is broken is never
+swapped in. The report JSON records them under `spot_checks: {batch, ws}`.
+
 ### Option A — environment variable (session-scoped, great for testing)
 
 ```bash

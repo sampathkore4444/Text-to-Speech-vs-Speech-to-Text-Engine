@@ -46,7 +46,6 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-
 from rich.console import Console
 from rich.table import Table
 
@@ -365,6 +364,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    # Default-on serving-path spot checks; --no-batch-check/--no-ws-check opt out.
+    args.check_batch = not args.no_batch_check
+    args.check_ws = not args.no_ws_check
     settings = Settings.load()
 
     ct2_dir = Path(args.ct2_dir)

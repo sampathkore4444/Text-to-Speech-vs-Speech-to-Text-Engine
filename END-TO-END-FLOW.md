@@ -827,7 +827,11 @@ Command: `speechai-finetune --data data/manifest.jsonl --base-model openai/whisp
    evaluates the *served* int8 model through the same harness and fails
    (exit 1) if its WER regresses beyond `--max-wer-gap` vs. the fp32 probe or
    breaches the absolute WER/RTF bars — i.e. the quantization loss is
-   explicitly gated before any traffic points at the new model.
+   explicitly gated before any traffic points at the new model. It also
+   spot-checks the batch-job (`POST /v1/jobs/transcribe`) and WebSocket
+   streaming (`/v1/ws/transcribe`) serving paths of the real API (on by
+   default; `--no-batch-check` / `--no-ws-check`), blocking the swap if any
+   serving path fails.
 8. **Hot swap** — point the platform at the export with zero code changes:
    ```bash
    SPEECHAI_STT__MODEL_PATH=data/models/finetuned/ct2

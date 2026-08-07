@@ -135,6 +135,11 @@ python scripts/verify_ct2_model.py \
   --fp32-report data/models/finetuned/report_finetuned.json
 ```
 
+It also **spot-checks the batch-job and WebSocket streaming serving paths** of
+the real API (on by default; `--no-batch-check` / `--no-ws-check` to disable)
+so the swap is gated on how the model is actually served, not just on offline
+eval numbers.
+
 ## 5. Evaluate & gate
 
 ```bash
