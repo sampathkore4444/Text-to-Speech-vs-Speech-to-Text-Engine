@@ -11,12 +11,20 @@ failing (non-zero exit) unless the swap gates hold:
 - **Absolute quality:**  int8 mean WER <= ``--max-wer-abs``
 - **Serving speed:**     int8 mean RTF <= ``--max-rtf``
 
+It also **spot-checks the serving paths** - a batch transcription job
+(``POST /v1/jobs/transcribe`` -> worker run -> status) and a WebSocket
+streaming session (``/v1/ws/transcribe`` with VAD-gated final events) - through
+the real FastAPI app in-process, reusing the already-loaded engine so the model
+is not loaded twice. A failed spot check blocks the swap (exit 1) just like a
+breached gate. Disable either with ``--no-batch-check`` / ``--no-ws-check``.
+
 Usage::
 
     python scripts/verify_ct2_model.py \\
         --ct2-dir data/models/finetuned/ct2 \\
         --manifest data/eval_manifest.jsonl \\
-        --fp32-report data/models/finetuned/report_finetuned.json
+        --fp32-report data/models/finetuned/report_finetuned.json \\
+        --sample-audio data/samples/sample_01_account_balance.wav
 
 Requires only the ``engines`` extra (faster-whisper) - not torch/transformers -
 so it runs on the same host that serves the model. Optional MLflow logging via
@@ -28,11 +36,16 @@ Exit codes: 0 = gates pass, 1 = gates breached, 2 = usage/input error.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
+import shutil
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
+
+import numpy as np
 
 from rich.console import Console
 from rich.table import Table
@@ -136,6 +149,150 @@ def top_regressions(
 
 
 # ---------------------------------------------------------------------------
+# Serving-path spot checks (batch job + WebSocket streaming)
+# ---------------------------------------------------------------------------
+def _resolve_spot_audio(args: argparse.Namespace, report: EvaluationReport) -> tuple[Path, Path | None]:
+    """Pick the audio for the serving-path spot checks.
+
+    Preference order: ``--sample-audio``, the first eval manifest utterance,
+    else a generated 2 s tone written to a temp dir (returned as the cleanup
+    path so the caller can remove it afterwards).
+    """
+    if args.sample_audio:
+        return Path(args.sample_audio), None
+    if report.results:
+        first = Path(report.results[0].audio)
+        if first.is_file():
+            return first, None
+    from speechai.audio.io import generate_sine, write_wav
+
+    temp_dir = Path(tempfile.mkdtemp(prefix="verify_ct2_"))
+    write_wav(temp_dir / "tone.wav", generate_sine(2.0, 16000))
+    return temp_dir / "tone.wav", temp_dir
+
+
+def _check_batch_path(
+    settings: Settings,
+    audio_path: str | Path,
+    *,
+    stt_engine: STTEngine | None = None,
+) -> dict[str, Any]:
+    """Run one transcription job through the real REST batch path.
+
+    Exercises ``POST /v1/jobs/transcribe`` (multipart upload + validation +
+    enqueue), the worker step (dequeue -> ``run_job`` -> ``transcribe_sync``)
+    and the job status route - with the same already-loaded engine the sync
+    eval used (injected so the model is not loaded twice).
+    """
+    from fastapi.testclient import TestClient
+
+    from speechai.api.app import create_app
+
+    try:
+        app = create_app(settings, stt_engine=stt_engine)
+        with TestClient(app) as client:
+            with open(audio_path, "rb") as fh:
+                response = client.post(
+                    "/v1/jobs/transcribe",
+                    files={"file": (Path(audio_path).name, fh, "audio/wav")},
+                )
+            if response.status_code != 202:
+                return {
+                    "ok": False,
+                    "error": f"submit returned HTTP {response.status_code}: {response.text[:200]}",
+                }
+            job_id = response.json()["job_id"]
+
+            async def _run_one():
+                job = await client.app.state.pipeline.get_job(job_id)
+                return await client.app.state.pipeline.run_job(job)
+
+            job = asyncio.run(_run_one())
+            if job.status.value != "succeeded":
+                return {"ok": False, "error": f"job status {job.status.value}: {job.error}"}
+            status_body = client.get(f"/v1/jobs/{job_id}").json()
+            result = status_body.get("result") or {}
+            return {
+                "ok": True,
+                "job_id": job_id,
+                "status": job.status.value,
+                "text_length": len(result.get("text", "")),
+            }
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+
+def _check_ws_path(
+    settings: Settings,
+    audio_path: str | Path,
+    *,
+    stt_engine: STTEngine | None = None,
+) -> dict[str, Any]:
+    """Stream audio through the real WebSocket serving path.
+
+    Exercises ``/v1/ws/transcribe``: config message, raw PCM16 chunk streaming,
+    VAD utterance segmentation and ``final`` events. Trailing silence is padded
+    so the VAD deterministically closes the utterance. Uses the energy VAD
+    backend (WebRTC's speech model may reject synthetic tones); the check
+    verifies the streaming *serving path*, not VAD tuning - ``settings.vad`` is
+    copied so the caller's config is untouched.
+    """
+    from fastapi.testclient import TestClient
+
+    from speechai.api.app import create_app
+    from speechai.audio.io import load_audio, pcm16_bytes, to_asr_audio
+
+    try:
+        ws_settings = settings.model_copy(deep=True)
+        ws_settings.vad.backend = "energy"
+        app = create_app(ws_settings, stt_engine=stt_engine)
+        with TestClient(app) as client:
+            audio = to_asr_audio(load_audio(audio_path))
+            lead = np.zeros(int(0.3 * audio.sample_rate), np.float32)
+            trail = np.zeros(int(0.8 * audio.sample_rate), np.float32)
+            signal = np.concatenate([lead, audio.samples, trail])
+            pcm = pcm16_bytes(signal)
+            with client.websocket_connect("/v1/ws/transcribe") as ws:
+                ws.send_json(
+                    {"sample_rate": audio.sample_rate, "language": settings.stt.language or "en"}
+                )
+                for i in range(0, len(pcm), 4800):
+                    ws.send_bytes(pcm[i : i + 4800])
+                ws.send_json({"action": "stop"})
+                events: list[dict[str, Any]] = []
+                while True:
+                    try:
+                        events.append(ws.receive_json())
+                    except Exception:
+                        break
+        errors = [e for e in events if e.get("type") == "error"]
+        if errors:
+            return {
+                "ok": False,
+                "error": f"ws error event {errors[0].get('code')}: {errors[0].get('message')}",
+            }
+        finals = [e for e in events if e.get("type") == "final"]
+        if not finals:
+            return {"ok": False, "error": "no final event emitted (VAD segmented no speech)"}
+        return {
+            "ok": True,
+            "events": len(events),
+            "finals": len(finals),
+            "final_text_length": sum(len(e.get("text", "")) for e in finals),
+        }
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+
+def _print_spot_check(name: str, result: dict[str, Any]) -> None:
+    if result.get("ok"):
+        detail = "  ".join(f"{k}={v}" for k, v in result.items() if k not in ("ok", "error"))
+        console.print(f"[green]spot check ({name}): OK[/green]  {detail}")
+    else:
+        console.print(f"[red]spot check ({name}): FAILED - {result.get('error')}[/red]")
+
+
+# ---------------------------------------------------------------------------
 def build_int8_engine(
     ct2_dir: str | Path,
     settings: Settings,
@@ -190,6 +347,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--mlflow-experiment", default="speechai", help="MLflow experiment name")
     parser.add_argument("--no-mlflow", action="store_true", help="Disable MLflow experiment tracking")
+    parser.add_argument(
+        "--sample-audio", default=None,
+        help="Audio pushed through the batch/WS spot checks "
+             "(default: first manifest utterance, else a generated tone)",
+    )
+    parser.add_argument(
+        "--no-batch-check", action="store_true",
+        help="Skip the batch-job serving-path spot check",
+    )
+    parser.add_argument(
+        "--no-ws-check", action="store_true",
+        help="Skip the WebSocket streaming serving-path spot check",
+    )
     return parser.parse_args(argv)
 
 
@@ -236,7 +406,31 @@ def main(argv: list[str] | None = None) -> int:
     regressions = top_regressions(report, fp32.get("utterances", {}))
 
     # ------------------------------------------------------------------
+    # Serving-path spot checks: run the exported model through the batch job
+    # and WebSocket streaming routes of the real FastAPI app. The sync-eval
+    # engine is injected so the model is loaded exactly once.
     _print_comparison(report, fp32_agg, gap, problems)
+    spot_checks: dict[str, Any] = {}
+    audio_path, cleanup_dir = _resolve_spot_audio(args, report)
+    try:
+        if args.check_batch:
+            spot_checks["batch"] = _check_batch_path(settings, audio_path, stt_engine=engine)
+            _print_spot_check("batch job", spot_checks["batch"])
+            if not spot_checks["batch"]["ok"]:
+                problems.append(
+                    "batch serving path failed: " + str(spot_checks["batch"].get("error"))
+                )
+        if args.check_ws:
+            spot_checks["ws"] = _check_ws_path(settings, audio_path, stt_engine=engine)
+            _print_spot_check("WebSocket", spot_checks["ws"])
+            if not spot_checks["ws"]["ok"]:
+                problems.append(
+                    "WebSocket serving path failed: " + str(spot_checks["ws"].get("error"))
+                )
+    finally:
+        if cleanup_dir is not None:
+            shutil.rmtree(cleanup_dir, ignore_errors=True)
+
     report_path = Path(
         args.report
         or str(settings.eval_report_dir / f"verify_ct2-{report.dataset}-int8.json")
@@ -262,6 +456,7 @@ def main(argv: list[str] | None = None) -> int:
         "passed": not problems,
         "problems": problems,
         "top_regressions": regressions,
+        "spot_checks": spot_checks,
     }
     report_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     console.print(f"[green]verification report written to[/green] {report_path}")
@@ -289,6 +484,10 @@ def main(argv: list[str] | None = None) -> int:
                 "max_wer_gap": args.max_wer_gap,
                 "max_wer_abs": args.max_wer_abs,
                 "max_rtf": args.max_rtf,
+                "batch_check": args.check_batch,
+                "ws_check": args.check_ws,
+                "spot_check_batch_ok": spot_checks.get("batch", {}).get("ok"),
+                "spot_check_ws_ok": spot_checks.get("ws", {}).get("ok"),
             }
         )
         metrics_: dict[str, float] = {}
@@ -303,9 +502,9 @@ def main(argv: list[str] | None = None) -> int:
 
     engine.close()
     if problems:
-        console.print("[red]swap gates breached - do NOT swap this model in[/red]")
+        console.print("[red]verification FAILED - do NOT swap this model in[/red]")
         return 1
-    console.print("[green]swap gates passed - safe to point stt.model_path at this export[/green]")
+    console.print("[green]verification passed - safe to point stt.model_path at this export[/green]")
     return 0
 
 

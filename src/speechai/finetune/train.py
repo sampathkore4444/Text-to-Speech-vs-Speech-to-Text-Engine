@@ -718,13 +718,10 @@ def _export_ct2(peft_model, processor, base_model_name: str, output_dir: Path) -
             convert(str(ct2_dir), quantization="int8")
         except TypeError:
             convert(str(ct2_dir))
-    # The fp32 source weights are only needed for the conversion - drop them
-    # so the output dir carries just the artifacts the platform serves.
-    shutil.rmtree(source_dir, ignore_errors=True)
-
     # faster-whisper needs the tokenizer + preprocessor next to model.bin.
     # Prefer the processor files saved into the source dir - that works even
     # for local/air-gapped base models - and only fall back to the HF hub.
+    # (Copy before cleaning up the source dir below.)
     for name in ("tokenizer.json", "preprocessor_config.json", "generation_config.json"):
         local_file = source_dir / name
         if local_file.is_file():
@@ -737,6 +734,10 @@ def _export_ct2(peft_model, processor, base_model_name: str, output_dir: Path) -
             logger.info("copied %s from base model", name)
         except Exception:
             logger.warning("could not copy %s (missing in source dir and base model)", name)
+
+    # The fp32 source weights are only needed for the conversion - drop them
+    # so the output dir carries just the artifacts the platform serves.
+    shutil.rmtree(source_dir, ignore_errors=True)
     return ct2_dir
 
 
