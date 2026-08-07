@@ -15,6 +15,7 @@
 > | Starter sample data generator | `scripts/make_sample_audio.py` |
 > | Evaluation harness (WER/CER/RTF + gates) | `src/speechai/eval/*` |
 > | int8-vs-fp32 verification before swap | `scripts/verify_ct2_model.py` |
+> | CI promotion gate (tightened bars) | `.github/workflows/model-promotion.yml` + `make verify-model` |
 > | faster-whisper engine (loads the fine-tuned model) | `src/speechai/stt/whisper_engine.py` |
 > | Configuration (model swap) | `configs/config.yaml` (`stt.model_path`) |
 >
@@ -40,6 +41,7 @@
 11. [Step 7 — Swap the fine-tuned model into the platform](#step-7--swap-the-fine-tuned-model-into-the-platform)
     - [7.1 — Verify the int8 export before swapping](#71--verify-the-int8-export-before-swapping)
 12. [Step 8 — Evaluate and gate the new model](#step-8--evaluate-and-gate-the-new-model)
+    - [8.1 — Promotion gate in CI](#81--promotion-gate-in-ci)
 13. [Step 9 — Production considerations](#step-9--production-considerations)
     - [9.6 — Production readiness checklist](#96--production-readiness-checklist)
 14. [Troubleshooting](#14-troubleshooting)
@@ -804,6 +806,41 @@ Every training run also pushes `stt_wer{finetune-baseline}` /
 same metrics appear in your dashboards (`deploy/prometheus/alerts.yml` can be
 extended to alert on regressions).
 
+### 8.1 — Promotion gate in CI (tightened, wired in)
+
+The repo ships a ready-to-run **model promotion gate** that bundles the
+absolute-quality eval and the quantization-loss verification under *stricter*
+bars than the dev defaults, so a model only gets promoted if it holds the
+production bar:
+
+| Gate | What it checks | Promotion default (dev default) |
+|---|---|---|
+| 1. Absolute quality | mean WER / RTF on the locked eval manifest (`speechai evaluate --gate`) | WER ≤ **0.08** (0.10), RTF ≤ **0.50** (0.50) |
+| 2. Quantization loss | int8 WER − fp32 WER (`verify_ct2_model.py --max-wer-gap`) | ≤ **0.02** (0.05) |
+| 3. Serving paths | batch-job + WebSocket spot checks (Step 7.1) | on by default; a failure blocks the swap |
+
+**`.github/workflows/model-promotion.yml`** — GitHub Actions (manual
+`workflow_dispatch` and reusable `workflow_call`). It takes the training
+outputs as inputs (ct2 dir, `report_finetuned.json`, locked eval manifest,
+tolerances), sanity-checks them, runs **Gate 1** with the tightened
+SPEECHAI_EVAL__* env overrides, runs **Gate 2** via `scripts/verify_ct2_model.py`
+with the tightened `--max-wer-gap`, and uploads both JSON reports as an
+artifact. Trigger it from your training pipeline with `workflow_call` and the
+same inputs, or copy the two gate steps into your own pipeline.
+
+**CI-agnostic equivalent:** `make verify-model` runs the same gate without
+GitHub — it defaults to the tightened bars and every knob is overridable:
+
+```bash
+make verify-model                                        # defaults: gap 0.02, WER 0.08
+make verify-model CT2_DIR=data/models/finetuned-v2/ct2 MAX_WER_GAP=0.01
+MAX_WER_ABS=0.05 MAX_RTF=0.40 make verify-model          # env vars work too
+```
+
+The exit code is the verdict: **0 = promote**, non-zero = do **not** swap. The
+gate consumes the `engines` extra only — no torch needed — so it runs in the
+same lean CI image that serves the model.
+
 ---
 
 ## Step 9 — Production considerations
@@ -920,6 +957,10 @@ speechai evaluate data/eval_manifest.jsonl --gate   # runs faster-whisper on int
 - [ ] **Staged rollout:** (1) offline gate (`speechai evaluate --gate` with
       tightened tolerances) → (2) shadow/offline replay on recent production
       calls → (3) canary on low-volume traffic → (4) full switch.
+- [ ] **Promotion gate in CI.** `.github/workflows/model-promotion.yml` +
+      `make verify-model` (Step 8.1) enforce the tightened bars on every
+      promotion — make it a *required* check so nothing can be swapped in
+      without passing it.
 - [ ] **Registry & blue-green:** `docs/production-checklist.md` lists a managed
       model registry (S3 + hash manifest) and blue-green/shadow rollout as
       *remaining* platform work — the config-flip swap above is the interim
@@ -1044,6 +1085,7 @@ speechai-finetune --data DATA [options]
 | Manifest formats | `src/speechai/eval/loader.py` |
 | WER/CER/RTF computation | `src/speechai/eval/metrics.py` |
 | int8-vs-fp32 verification before swap | `scripts/verify_ct2_model.py` |
+| CI promotion gate (tightened bars) | `.github/workflows/model-promotion.yml` + `make verify-model` |
 | Model swap (`model_path or model_size`) | `src/speechai/stt/whisper_engine.py` (`_model_ref`) |
 | Config key | `configs/config.yaml` → `stt.model_path` |
 

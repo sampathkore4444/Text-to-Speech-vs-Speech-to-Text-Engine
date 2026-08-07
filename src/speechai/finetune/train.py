@@ -628,12 +628,14 @@ def _load_checkpoint(
     optimizer,
     scheduler,
     device: str,
-) -> tuple[int, int]:
+) -> tuple[int, int, float | None]:
     """Load a checkpoint produced by :func:`_save_checkpoint`.
 
     Validates that the checkpoint was trained with the same model-defining
     configuration, then restores model/optimizer/scheduler and RNG state.
-    Returns ``(next_epoch, global_step, best_val_wer)``.
+    Returns ``(next_epoch, global_step, best_val_wer)`` - ``best_val_wer`` is
+    ``None`` when the checkpoint predates early stopping or no improvement
+    was ever recorded.
     """
     import random
 

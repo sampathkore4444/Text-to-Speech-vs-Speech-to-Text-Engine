@@ -66,6 +66,10 @@ the rollout plan.
 - [x] Inference: sync, batch, and streaming paths with engine abstraction.
 - [x] Evaluation: WER, CER, RTF, latency, per-utterance + aggregate reports,
       CI regression gates.
+- [x] **Model promotion gate:** `.github/workflows/model-promotion.yml` +
+      `make verify-model` gate int8-vs-fp32 swaps in CI with tightened
+      tolerances and batch/WebSocket serving-path spot checks
+      (`HOW_TO_FINETUNE_FOR_BANKING.md` §8.1).
 - [x] Optimization: int8/float16 quantization, beam-size tuning, language pinning,
       utterance caps, trailing-silence trimming.
 

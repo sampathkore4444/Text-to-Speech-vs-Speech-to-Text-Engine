@@ -150,6 +150,15 @@ Compare `report_baseline.json` vs `report_finetuned.json`; the `--gate` flags
 WER > 10% / RTF > 0.5 (configurable in `eval.default_*_tolerance`). Add the
 evaluation to CI so future model swaps must hold the bar.
 
+**Promotion gate in CI.** The repo ships `.github/workflows/model-promotion.yml`
+— GitHub Actions (manual `workflow_dispatch` or reusable `workflow_call`) that
+runs the eval gate with tightened tolerances (WER ≤ 0.08) plus
+`scripts/verify_ct2_model.py` with `--max-wer-gap 0.02` and the batch-job +
+WebSocket serving-path spot checks, then uploads the two JSON reports as an
+artifact. The CI-agnostic equivalent is `make verify-model` (env-overridable:
+`MAX_WER_GAP`, `MAX_WER_ABS`, `MAX_RTF`, `CT2_DIR`, `EVAL_MANIFEST`, …).
+Exit 0 = promote, non-zero = do **not** swap the model in.
+
 ## 6. Production notes
 
 - **Conversion** happens on CPU and takes minutes for `base`; do it in a build

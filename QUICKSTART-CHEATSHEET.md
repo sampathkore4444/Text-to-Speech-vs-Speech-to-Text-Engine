@@ -185,6 +185,13 @@ async with websockets.connect("ws://localhost:8000/v1/ws/transcribe") as ws:
 speechai transcribe data/samples/sample_01_account_balance.wav --json
 speechai synthesize "Your balance is one thousand dollars." -o out.wav --speed 1.0
 speechai evaluate data/manifest.jsonl --gate        # WER/CER/RTF report + regression gates
+
+# Promotion gate: verify an int8 CT2 export against the fp32 baseline before swapping
+make verify-model                                  # tightened bars: gap 0.02, WER 0.08
+# or directly:
+python scripts/verify_ct2_model.py --ct2-dir data/models/finetuned/ct2 \
+  --manifest data/eval_manifest.jsonl --fp32-report data/models/finetuned/report_finetuned.json
+# GitHub Actions equivalent: .github/workflows/model-promotion.yml
 speechai models
 
 # Fine-tune Whisper with LoRA (needs: pip install -e ".[finetune]")
@@ -237,6 +244,7 @@ make run-api          # uvicorn ... --reload
 make run-worker       # python -m speechai.workers.batch_worker
 make test             # pytest
 make lint             # ruff check
+make verify-model     # int8-vs-fp32 promotion gate (tightened bars, CI-agnostic)
 make docker-up        # docker compose up --build
 make docker-down      # docker compose down
 ```

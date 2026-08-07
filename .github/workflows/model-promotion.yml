@@ -1,0 +1,160 @@
+# Model promotion gate — blocks a fine-tuned Whisper swap unless it holds the bar.
+#
+# Runs the two quality gates that must pass BEFORE a new CTranslate2 export is
+# pointed at by `stt.model_path`:
+#
+#   1. Absolute gate  : `speechai evaluate --gate` on the held-out eval
+#                       manifest (tolerances tightened via env overlay).
+#   2. Quantization   : `scripts/verify_ct2_model.py` compares the *served*
+#                       int8 export against the fp32 `report_finetuned.json`
+#                       (--max-wer-gap) and spot-checks the batch-job and
+#                       WebSocket serving paths.
+#
+# The gate consumes training outputs that must already be in the workspace
+# (checked out or downloaded by the calling pipeline):
+#   - <ct2_dir>/model.bin        (the exported CTranslate2 model)
+#   - <fp32_report>              (report_finetuned.json from speechai-finetune)
+#   - <manifest>                 (the locked, held-out eval manifest)
+#
+# Usage:
+#   - Manually: Actions -> "Model promotion gate" -> Run workflow.
+#   - From a training pipeline (CI wiring): call this workflow with
+#     `workflow_call` and the same inputs, or copy the two gate steps into your
+#     own pipeline. `make verify-model` is the CI-agnostic equivalent.
+#
+# Tightened defaults: --max-wer-gap 0.02 (default is 0.05) and an absolute
+# WER bar of 0.08 (default 0.10). Adjust per use-case, but keep them *stricter*
+# than the dev defaults.
+
+name: Model promotion gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      ct2_dir:
+        description: "Exported CTranslate2 dir (contains model.bin), relative to the repo root"
+        required: true
+        default: "data/models/finetuned/ct2"
+      manifest:
+        description: "Locked held-out eval manifest (JSONL/CSV/dir)"
+        required: true
+        default: "data/eval_manifest.jsonl"
+      fp32_report:
+        description: "Training-time fp32 report (report_finetuned.json)"
+        required: true
+        default: "data/models/finetuned/report_finetuned.json"
+      language:
+        description: "Language override (e.g. en)"
+        required: false
+        default: "en"
+      max_wer_gap:
+        description: "Max int8 WER - fp32 WER (quantization loss)"
+        required: false
+        default: "0.02"
+      max_wer_abs:
+        description: "Max absolute int8 mean WER (also used for the eval --gate)"
+        required: false
+        default: "0.08"
+      max_rtf:
+        description: "Max int8 mean RTF (also used for the eval --gate)"
+        required: false
+        default: "0.50"
+  workflow_call:
+    # `required: false` with defaults so calling workflows get the tightened
+    # promotion bars out of the box; the sanity-check step fails loudly if the
+    # training outputs are not actually present at the given paths.
+    inputs:
+      ct2_dir:
+        type: string
+        required: false
+        default: "data/models/finetuned/ct2"
+      manifest:
+        type: string
+        required: false
+        default: "data/eval_manifest.jsonl"
+      fp32_report:
+        type: string
+        required: false
+        default: "data/models/finetuned/report_finetuned.json"
+      language:
+        type: string
+        required: false
+        default: "en"
+      max_wer_gap:
+        type: string
+        required: false
+        default: "0.02"
+      max_wer_abs:
+        type: string
+        required: false
+        default: "0.08"
+      max_rtf:
+        type: string
+        required: false
+        default: "0.50"
+
+jobs:
+  promote-gate:
+    runs-on: ubuntu-latest
+    # int8 eval over a large manifest on CI CPU can be slow; fail fast rather
+    # than ride GitHub's 6h default if a gate hangs.
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install platform + engines (faster-whisper)
+        run: pip install -e ".[engines]"
+
+      - name: Sanity-check inputs
+        run: |
+          test -f "${{ inputs.ct2_dir }}/model.bin" \
+            || { echo "missing ${{ inputs.ct2_dir }}/model.bin"; exit 1; }
+          test -f "${{ inputs.manifest }}" \
+            || { echo "missing eval manifest ${{ inputs.manifest }}"; exit 1; }
+          test -f "${{ inputs.fp32_report }}" \
+            || { echo "missing fp32 report ${{ inputs.fp32_report }}"; exit 1; }
+
+      - name: Gate 1 - absolute quality (speechai evaluate --gate)
+        # Points the engine at the int8 export and tightens the eval tolerances
+        # to the promotion bar (env-overlay overrides configs/config.yaml).
+        env:
+          SPEECHAI_STT__MODEL_PATH: ${{ inputs.ct2_dir }}
+          SPEECHAI_EVAL__DEFAULT_WER_TOLERANCE: ${{ inputs.max_wer_abs }}
+          SPEECHAI_EVAL__DEFAULT_RTF_TOLERANCE: ${{ inputs.max_rtf }}
+        run: |
+          python -m speechai.cli.main evaluate \
+            "${{ inputs.manifest }}" \
+            --language "${{ inputs.language }}" \
+            --gate \
+            --report data/eval/gate-absolute.json \
+            --no-mlflow
+
+      - name: Gate 2 - quantization loss + serving-path spot checks
+        # int8 (served) vs fp32 (report_finetuned.json) with a tightened gap;
+        # also runs the batch-job and WebSocket serving-path spot checks.
+        run: |
+          python scripts/verify_ct2_model.py \
+            --ct2-dir "${{ inputs.ct2_dir }}" \
+            --manifest "${{ inputs.manifest }}" \
+            --fp32-report "${{ inputs.fp32_report }}" \
+            --language "${{ inputs.language }}" \
+            --max-wer-gap "${{ inputs.max_wer_gap }}" \
+            --max-wer-abs "${{ inputs.max_wer_abs }}" \
+            --max-rtf "${{ inputs.max_rtf }}" \
+            --report data/eval/verify_ct2-promotion.json \
+            --no-mlflow
+
+      - name: Upload promotion reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: promotion-reports
+          path: |
+            data/eval/gate-absolute.json
+            data/eval/verify_ct2-promotion.json
+          if-no-files-found: error
