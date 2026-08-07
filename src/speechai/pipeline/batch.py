@@ -23,7 +23,7 @@ from speechai.pipeline.jobs import Job, JobType, new_job_id
 from speechai.pipeline.queue import JobQueue
 from speechai.redaction.pii import RedactionPolicy, Redactor
 from speechai.stt.base import STTEngine, STTOptions, build_stt_engine
-from speechai.stt.postprocess import TextPostProcessor
+from speechai.stt.postprocess import TextPostProcessor, refine_segments
 from speechai.tts.base import TTSEngine, TTSOptions, build_tts_engine
 from speechai.tts.textnorm import TextNormalizer
 
@@ -187,13 +187,17 @@ class BatchPipeline:
         )
         result = self.stt_engine.transcribe(asr_audio, options)
         processed = self.postprocessor.process(result.text, redact=redact) if redact else None
+        # Split engine segments into per-sentence rows so multi-sentence audio
+        # renders as one line per sentence (faster-whisper often emits a single
+        # segment for an entire file). See postprocess.refine_segments.
+        segments = refine_segments(result.segments) if result.segments else []
         payload: dict[str, Any] = {
             "text": processed.text if processed else result.text,
             "language": result.language,
             "engine": result.engine,
             "segments": [
                 {"text": s.text, "start": s.start, "end": s.end, "confidence": s.confidence}
-                for s in result.segments
+                for s in segments
             ],
             "redacted": bool(processed and processed.redacted),
             "redactions": [

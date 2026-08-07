@@ -224,6 +224,10 @@
     color: var(--ink-dim);
   }
   .rec-ind .dot { width: 10px; height: 10px; background: var(--ink-faint); }
+  .meter {
+    font-family: var(--mono); font-size: 11.5px; color: var(--ink-dim);
+    border: 1px solid var(--line); border-radius: 6px; padding: 4px 9px;
+  }
   .rec-ind.on .dot { background: var(--danger); animation: pulse 1.2s ease-in-out infinite; }
   @keyframes pulse { 0%,100% { opacity: 1; transform: scale(1);} 50% { opacity: .35; transform: scale(.72);} }
   .eq { display: inline-flex; gap: 3px; align-items: flex-end; height: 16px; }
@@ -392,6 +396,7 @@
         <span class="rec-ind" id="recInd"><span class="dot"></span><span id="recLabel">idle</span>
           <span class="eq off" id="eq"><i></i><i></i><i></i><i></i></span>
         </span>
+        <span class="meter" id="micMeter" title="Raw microphone input level">−∞ dB</span>
         <div class="opt" style="min-width:150px">
           <label for="liveLang">Language</label>
           <select id="liveLang">
@@ -599,7 +604,9 @@
 
   function renderStt(b) {
     $('sttResult').hidden = false;
-    $('sttText').textContent = b.text || '(empty transcript)';
+    var segs = (b.segments && b.segments.length) ? b.segments : [];
+    var lines = segs.length ? segs.map(function (s) { return s.text; }) : splitSentences(b.text || '');
+    $('sttText').textContent = (lines.length ? lines.join('\n') : b.text) || '(empty transcript)';
     $('sttText').className = 'transcript' + (b.redacted ? '' : '');
     var rb = $('sttRedactions'); rb.innerHTML = '';
     if (b.redacted) {
@@ -645,6 +652,10 @@
     if (s == null) return '—';
     return s.toFixed(2) + 's';
   }
+  function splitSentences(t) {
+    if (!t) return [];
+    return t.split(/(?<=[.!?])\s+/).map(function (p) { return p.trim(); }).filter(Boolean);
+  }
   function showBanner(cardId, bannerId, title, msg) {
     var card = $(cardId);
     var old = $(bannerId); if (old) old.remove();
@@ -662,7 +673,8 @@
 
   /* ================= 02 · LIVE MIC ================= */
   var ws = null, audioCtx = null, micStream = null, procNode = null, sourceNode = null;
-  var utteranceCount = 0, micFrames = 0, serverErrorShown = false;
+  var utteranceCount = 0, micFrames = 0, serverErrorShown = false, watchdogTimer = null;
+  var autoGain = 1.0, micLeveldB = -100, rmsTarget = 0.09;
 
   function wsUrl() {
     var proto = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -680,11 +692,18 @@
     // and a suspended context never delivers audio to the processing node - the
     // classic silent-mic bug where the page shows "listening" but sends no audio.
     var ctx;
+    // Capture directly at the ASR rate when the browser allows it (Chrome
+    // resamples the hardware mic internally with high quality), so no extra
+    // resampling happens on the wire.
     try {
-      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
     } catch (e) {
-      showBanner('tab-live', 'liveBanner', 'Audio unavailable', e.message);
-      return;
+      try {
+        ctx = new (window.AudioContext || window.webkitAudioContext)();
+      } catch (e2) {
+        showBanner('tab-live', 'liveBanner', 'Audio unavailable', e2.message);
+        return;
+      }
     }
     log('mic', 'AudioContext created (' + ctx.state + ' @ ' + ctx.sampleRate + ' Hz)');
     if (ctx.state === 'suspended') {
@@ -692,7 +711,10 @@
     }
     micFrames = 0;
     serverErrorShown = false;
-    navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } })
+    // noiseSuppression is off: Chrome's denoiser can chop quiet speech into
+    // silence. autoGainControl lifts quiet mics; the app also applies an
+    // adaptive boost below.
+    navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: false, autoGainControl: true } })
       .then(function (stream) {
         micStream = stream;
         audioCtx = ctx;
@@ -700,6 +722,19 @@
         procNode = audioCtx.createScriptProcessor(4096, 1, 1);
         var sink = audioCtx.createGain(); sink.gain.value = 0;
         sourceNode.connect(procNode); procNode.connect(sink);
+        // Critical: a ScriptProcessorNode only fires onaudioprocess while it is
+        // part of the rendered graph - i.e. connected (transitively) to the
+        // destination. Without this the node is never pulled, onaudioprocess
+        // never runs, and no mic audio is ever sent (the silent-mic bug). The
+        // muted gain keeps the audio inaudible.
+        sink.connect(audioCtx.destination);
+        // Watchdog: if no frames have been captured a few seconds after the
+        // stream starts, surface it instead of failing silently.
+        watchdogTimer = setTimeout(function () {
+          if (micFrames === 0) {
+            log('mic', 'no audio frames captured after 4s - check mic level, browser mute, or another app using the mic', 'err');
+          }
+        }, 4000);
 
         ws = new WebSocket(wsUrl());
         ws.binaryType = 'arraybuffer';
@@ -738,15 +773,31 @@
 
         procNode.onaudioprocess = function (e) {
           if (!ws || ws.readyState !== 1) return;
-          if (micFrames === 0) log('mic', 'audio frames flowing — sending PCM @ ' + audioCtx.sampleRate + ' Hz', 'ok');
-          micFrames++;
           var ch = e.inputBuffer.getChannelData(0);
+          // Measure raw input level and adaptively boost quiet mics (speech
+          // apps want ~ -20 dBFS; boost is smoothed and capped).
+          var sum = 0;
+          for (var i = 0; i < ch.length; i++) sum += ch[i] * ch[i];
+          var rms = Math.sqrt(sum / ch.length);
+          var want = rms > 0.0003 ? rmsTarget / rms : 1;
+          if (want < 1) want = 1;
+          if (want > 8) want = 8;
+          autoGain = autoGain * 0.85 + want * 0.15;
+          micLeveldB = 20 * Math.log10(Math.max(rms, 1e-5));
+          if (micFrames === 0) {
+            log('mic', 'audio frames flowing — ' + micLeveldB.toFixed(0) + ' dBFS, boost x' + autoGain.toFixed(1) + ' @ ' + audioCtx.sampleRate + ' Hz', 'ok');
+          }
+          micFrames++;
           var buf = new Int16Array(ch.length);
-          for (var i = 0; i < ch.length; i++) {
-            var s = Math.max(-1, Math.min(1, ch[i]));
-            buf[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+          for (var j = 0; j < ch.length; j++) {
+            var s = Math.max(-1, Math.min(1, ch[j] * autoGain));
+            buf[j] = s < 0 ? s * 0x8000 : s * 0x7fff;
           }
           ws.send(buf);
+          if (micFrames % 10 === 0) {
+            var m = $('micMeter');
+            if (m) m.textContent = (micLeveldB > -99 ? micLeveldB.toFixed(0) : '-∞') + ' dB';
+          }
         };
       })
       .catch(function (err) {
@@ -766,6 +817,7 @@
     if (procNode) { procNode.onaudioprocess = null; try { procNode.disconnect(); } catch (e) {} }
     if (sourceNode) { try { sourceNode.disconnect(); } catch (e) {} }
     if (audioCtx) { try { audioCtx.close(); } catch (e) {} }
+    if (watchdogTimer) { clearTimeout(watchdogTimer); watchdogTimer = null; }
     ws = null; micStream = null; procNode = null; sourceNode = null; audioCtx = null;
     setLive(false);
     log('ws', 'stream stopped — final utterance flushed');

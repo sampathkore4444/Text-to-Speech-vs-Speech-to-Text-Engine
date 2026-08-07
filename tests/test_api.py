@@ -89,6 +89,45 @@ def test_transcribe_endpoint(client, sample_audio, fake_stt) -> None:
     assert body["metrics"]["rtf"] >= 0
 
 
+def test_transcribe_returns_sentence_segments(settings, fake_tts, sample_audio) -> None:
+    """A whole-file single engine segment must come back as per-sentence rows."""
+    from speechai.stt.base import Segment, TranscriptionResult
+
+    class MultiSentenceSTT:
+        name = "multi-stt"
+
+        def load(self) -> None:
+            pass
+
+        def transcribe(self, audio, options=None):
+            seg = Segment(text="First sentence. Second sentence!", start=0.0, end=6.0, confidence=0.9)
+            return TranscriptionResult(
+                text=seg.text,
+                language="en",
+                segments=[seg],
+                duration_seconds=6.0,
+                latency_seconds=0.1,
+                rtf=0.02,
+                engine=self.name,
+                avg_confidence=0.9,
+            )
+
+        def close(self) -> None:
+            pass
+
+    app = create_app(settings, stt_engine=MultiSentenceSTT(), tts_engine=fake_tts)
+    with TestClient(app) as client:
+        with open(sample_audio, "rb") as fh:
+            response = client.post(
+                "/v1/transcribe", files={"file": ("sample.wav", fh, "audio/wav")}
+            )
+    assert response.status_code == 200
+    body = response.json()
+    assert [s["text"] for s in body["segments"]] == ["First sentence.", "Second sentence!"]
+    assert body["segments"][0]["end"] <= body["segments"][1]["start"] + 1e-6
+    assert body["segments"][1]["end"] == 6.0
+
+
 def test_transcribe_redacts_pii(client, sample_audio, fake_stt) -> None:
     fake_stt.text = "My card is 4242 4242 4242 4242"
     with open(sample_audio, "rb") as fh:

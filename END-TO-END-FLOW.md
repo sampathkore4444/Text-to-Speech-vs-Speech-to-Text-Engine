@@ -558,6 +558,11 @@ Everything below happens inside `BatchPipeline.transcribe_sync` (sync REST) or
    `{text, start, end, confidence}`, `redacted` flag, the redaction `findings`
    (`{type, masked}`), and `metrics` (`latency_seconds`, `engine_seconds`, `rtf`,
    `audio_duration_seconds`, `confidence`).
+   Segments are **sentence-level**: the engine transcribes with word timestamps
+   and rows are regrouped on inter-word pauses (`whisper_engine._group_word_segments`),
+   so a multi-sentence file yields one timed line per sentence instead of a
+   single whole-file segment (faster-whisper's own VAD only splits on ≥ 2 s
+   silences).
 7. **Metrics** — increments `stt_requests_total{status,channel}`, observes
    `stt_audio_seconds_total`, `stt_latency_seconds`, `stt_rtf`,
    `stt_confidence`.

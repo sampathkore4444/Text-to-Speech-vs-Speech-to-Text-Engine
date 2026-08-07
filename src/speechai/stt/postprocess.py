@@ -12,6 +12,7 @@ import re
 from dataclasses import dataclass, field
 
 from speechai.redaction.pii import Finding, Redactor
+from speechai.stt.base import Segment
 
 
 @dataclass
@@ -55,3 +56,43 @@ def fix_spacing(text: str) -> str:
 
 def cap_sentences(text: str) -> str:
     return re.sub(r"(^|[.!?]\s+)([a-z])", lambda m: m.group(1) + m.group(2).upper(), text)
+
+
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
+
+
+def split_sentences(text: str) -> list[str]:
+    """Split text into sentences on ``.``/``!``/``?`` followed by whitespace."""
+    if not text:
+        return []
+    parts = [part.strip() for part in _SENTENCE_SPLIT.split(text)]
+    return [part for part in parts if part]
+
+
+def refine_segments(segments: list[Segment]) -> list[Segment]:
+    """Expand engine segments so each row is a single sentence.
+
+    faster-whisper often returns one segment spanning several sentences when
+    the pauses between them are short (a single file transcribes as one
+    "line"). Splitting on sentence boundaries - with timings interpolated
+    proportionally to the character offsets within the segment - gives every
+    consumer clean per-line, timed rows. Segments that are already a single
+    sentence are returned unchanged.
+    """
+    refined: list[Segment] = []
+    for seg in segments:
+        sentences = split_sentences(seg.text)
+        if len(sentences) <= 1:
+            refined.append(seg)
+            continue
+        span = max(seg.end - seg.start, 1e-3)
+        text_len = max(len(seg.text), 1)
+        cursor = 0
+        for sentence in sentences:
+            start = seg.start + span * (cursor / text_len)
+            cursor += len(sentence)
+            end = seg.start + span * (cursor / text_len)
+            refined.append(Segment(text=sentence, start=start, end=end, confidence=seg.confidence))
+            cursor += 1  # the whitespace separator
+        refined[-1].end = seg.end  # clamp the final boundary to the segment end
+    return refined
