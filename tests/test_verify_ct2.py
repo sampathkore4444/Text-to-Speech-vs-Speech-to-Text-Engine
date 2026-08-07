@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 
+from speechai.audio.io import generate_sine, write_wav
+from speechai.core.config import Settings
 from speechai.eval.metrics import EvaluationReport, UtteranceResult
 
 _SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "verify_ct2_model.py"
@@ -148,6 +150,7 @@ def test_main_pass(tmp_path: Path, monkeypatch):
         [
             "--ct2-dir", ct2_dir, "--manifest", manifest, "--fp32-report", fp32_report,
             "--report", str(report_out),
+            "--no-batch-check", "--no-ws-check",
         ]
     )
     assert exit_code == 0
@@ -155,6 +158,7 @@ def test_main_pass(tmp_path: Path, monkeypatch):
     assert payload["passed"] is True
     assert payload["problems"] == []
     assert payload["wer_gap"] == pytest.approx(0.01)
+    assert payload["spot_checks"] == {}
 
 
 def test_main_fails_when_gap_breached(tmp_path: Path, monkeypatch):
@@ -165,6 +169,7 @@ def test_main_fails_when_gap_breached(tmp_path: Path, monkeypatch):
         [
             "--ct2-dir", ct2_dir, "--manifest", manifest, "--fp32-report", fp32_report,
             "--report", str(report_out),
+            "--no-batch-check", "--no-ws-check",
         ]
     )
     assert exit_code == 1
@@ -182,3 +187,114 @@ def test_main_missing_ct2_dir(tmp_path: Path):
         ]
     )
     assert exit_code == 2
+
+
+# ---------------------------------------------------------------------------
+# Serving-path spot checks (batch job + WebSocket), tested with a fake engine
+# against the real FastAPI app - no faster-whisper needed.
+# ---------------------------------------------------------------------------
+class _FakeSpotSTT:
+    name = "fake-spot-stt"
+
+    def load(self) -> None:
+        pass
+
+    def transcribe(self, audio, options=None):
+        from speechai.stt.base import Segment, TranscriptionResult
+
+        segment = Segment(text="hello bank customer", start=0.0, end=1.0, confidence=0.9)
+        return TranscriptionResult(
+            text=segment.text,
+            language="en",
+            segments=[segment],
+            duration_seconds=1.0,
+            latency_seconds=0.01,
+            rtf=0.01,
+            engine=self.name,
+            avg_confidence=0.9,
+        )
+
+    def close(self) -> None:
+        pass
+
+
+def _spot_settings(tmp_path: Path) -> Settings:
+    return Settings(
+        service={"name": "verify-test", "environment": "development", "log_level": "WARNING", "log_format": "text"},
+        storage={"data_dir": str(tmp_path / "data")},
+        queue={"backend": "memory"},
+        vad={"backend": "energy"},
+    )
+
+
+def test_check_batch_path_ok(tmp_path: Path):
+    """A transcription job runs end to end through the real REST batch path."""
+    settings = _spot_settings(tmp_path)
+    audio = tmp_path / "tone.wav"
+    write_wav(audio, generate_sine(1.0, 16000))
+    result = verify._check_batch_path(settings, audio, stt_engine=_FakeSpotSTT())
+    assert result["ok"] is True
+    assert result["status"] == "succeeded"
+    assert result["text_length"] == len("hello bank customer")
+
+
+def test_check_ws_path_ok(tmp_path: Path):
+    """Streaming PCM through /v1/ws/transcribe yields a final event."""
+    settings = _spot_settings(tmp_path)
+    audio = tmp_path / "tone.wav"
+    write_wav(audio, generate_sine(0.5, 16000, freq=300))
+    result = verify._check_ws_path(settings, audio, stt_engine=_FakeSpotSTT())
+    assert result["ok"] is True
+    assert result["finals"] >= 1
+
+
+def test_main_records_spot_checks(tmp_path: Path, monkeypatch):
+    """Passing spot checks land in the report and keep the run green."""
+    ct2_dir, manifest, fp32_report = _write_fixtures(tmp_path)
+    monkeypatch.setattr(verify, "run_from_manifest", lambda engine, m, language=None: _make_report(wer=0.05))
+    monkeypatch.setattr(
+        verify, "_check_batch_path",
+        lambda *a, **k: {"ok": True, "status": "succeeded", "text_length": 7},
+    )
+    monkeypatch.setattr(
+        verify, "_check_ws_path",
+        lambda *a, **k: {"ok": True, "events": 2, "finals": 1},
+    )
+    report_out = tmp_path / "verify.json"
+    exit_code = verify.main(
+        [
+            "--ct2-dir", ct2_dir, "--manifest", manifest, "--fp32-report", fp32_report,
+            "--report", str(report_out),
+        ]
+    )
+    assert exit_code == 0
+    payload = json.loads(report_out.read_text(encoding="utf-8"))
+    assert payload["passed"] is True
+    assert payload["spot_checks"]["batch"]["ok"] is True
+    assert payload["spot_checks"]["ws"]["ok"] is True
+
+
+def test_main_spot_check_failure_gates_run(tmp_path: Path, monkeypatch):
+    """A failed serving-path spot check must block the swap (exit 1)."""
+    ct2_dir, manifest, fp32_report = _write_fixtures(tmp_path)
+    monkeypatch.setattr(verify, "run_from_manifest", lambda engine, m, language=None: _make_report(wer=0.05))
+    monkeypatch.setattr(
+        verify, "_check_batch_path",
+        lambda *a, **k: {"ok": False, "error": "submit returned HTTP 500"},
+    )
+    monkeypatch.setattr(
+        verify, "_check_ws_path",
+        lambda *a, **k: {"ok": True, "events": 1, "finals": 1},
+    )
+    report_out = tmp_path / "verify.json"
+    exit_code = verify.main(
+        [
+            "--ct2-dir", ct2_dir, "--manifest", manifest, "--fp32-report", fp32_report,
+            "--report", str(report_out),
+        ]
+    )
+    assert exit_code == 1
+    payload = json.loads(report_out.read_text(encoding="utf-8"))
+    assert payload["passed"] is False
+    assert any("batch serving path" in p for p in payload["problems"])
+    assert payload["spot_checks"]["batch"]["ok"] is False
