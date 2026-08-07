@@ -49,7 +49,8 @@ the rollout plan.
 - [x] Test suite (pytest, pytest-asyncio) with deterministic stub engines.
 - [x] **LoRA fine-tuning harness** (`speechai-finetune`): manifest-driven training,
       baseline vs fine-tuned WER reports, adapter merge + CTranslate2 export,
-      and a one-line engine swap via `stt.model_path` (see `docs/finetuning.md`).
+      and a one-line engine swap via `stt.model_path` (see `docs/finetuning.md`
+      and the step-by-step `HOW_TO_FINETUNE_FOR_BANKING.md`).
 
 **Remaining**
 

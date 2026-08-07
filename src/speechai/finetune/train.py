@@ -13,6 +13,11 @@ End-to-end recipe (see ``docs/finetuning.md`` for details):
    encoder+decoder attention (q_proj, v_proj), reports WER *after*, and exports
    a merged CTranslate2 model into ``<output-dir>/ct2``.
 
+   Runs are crash-safe: a checkpoint (model + optimizer + scheduler + RNG +
+   config) is saved at every epoch boundary, and an interrupted run resumes with
+   the same flags plus ``--resume-from <output-dir>/checkpoints/latest.pt``.
+   ``--patience`` adds early stopping on held-out WER (restores the best model).
+
 3. Swap the platform to the fine-tuned model (no code changes):
        SPEECHAI_STT__MODEL_PATH=data/models/finetuned/ct2
    or set ``stt.model_path`` in ``configs/config.yaml``. The faster-whisper
@@ -25,6 +30,7 @@ Requires the ``finetune`` extra: ``pip install -e '.[finetune]'``
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import logging
 import random
 import shutil
@@ -65,6 +71,12 @@ class TrainConfig:
     seed: int = 42
     device: str = "auto"
     export_ct2: bool = True
+    # Checkpointing & early stopping
+    resume_from: str | None = None  # path to a checkpoint to continue from
+    save_every_steps: int = 0  # 0 = save at the end of every epoch
+    patience: int = 0  # early stop after N val-WER evals without improvement (0 = off)
+    min_delta: float = 0.0  # minimum absolute WER improvement to count as progress
+    eval_every_epochs: int = 1  # held-out WER probe cadence when --patience is set
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -93,6 +105,28 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"])
     parser.add_argument("--no-export-ct2", action="store_true", help="skip CTranslate2 export")
+    parser.add_argument(
+        "--resume-from", default=None,
+        help="resume training from a checkpoint file "
+             "(e.g. <output-dir>/checkpoints/latest.pt)",
+    )
+    parser.add_argument(
+        "--save-every-steps", type=int, default=0,
+        help="save a checkpoint every N optimizer steps (0 = end of every epoch)",
+    )
+    parser.add_argument(
+        "--patience", type=int, default=0,
+        help="early stop after this many val-WER evaluations without improvement "
+             "(0 = disabled)",
+    )
+    parser.add_argument(
+        "--min-delta", type=float, default=0.0,
+        help="minimum absolute WER improvement to count as progress (with --patience)",
+    )
+    parser.add_argument(
+        "--eval-every-epochs", type=int, default=1,
+        help="evaluate held-out WER every N epochs when --patience is set",
+    )
     return parser
 
 
@@ -125,6 +159,11 @@ def main(argv: list[str] | None = None) -> int:
         seed=args.seed,
         device=args.device,
         export_ct2=not args.no_export_ct2,
+        resume_from=args.resume_from,
+        save_every_steps=args.save_every_steps,
+        patience=args.patience,
+        min_delta=args.min_delta,
+        eval_every_epochs=args.eval_every_epochs,
     )
     try:
         _run(config)
@@ -172,7 +211,9 @@ def _run(config: TrainConfig) -> None:
 
     # 2. Baseline WER (base model, before any adaptation) ----------------------
     baseline = None
-    if val_dataset.items:
+    if config.resume_from is not None:
+        print("resuming run - skipping the baseline probe (already recorded on first start)")
+    elif val_dataset.items:
         print(f"\nprobing baseline WER on {min(len(val_dataset), config.baseline_limit)} val utterances...")
         baseline = _evaluate_wer(
             model, processor, val_dataset,
@@ -208,13 +249,53 @@ def _run(config: TrainConfig) -> None:
         optimizer, num_warmup_steps=config.warmup_steps, num_training_steps=total_steps
     )
 
+    # Resume support: a checkpoint restores model/optimizer/scheduler state and
+    # the RNG, so an interrupted run continues instead of restarting.
+    start_epoch = 1
+    global_step = 0
+    best_val_wer: float | None = None
+    best_state_path: Path | None = None
+    checkpoints_dir = output_dir / "checkpoints"
+    checkpoint_path = checkpoints_dir / "latest.pt"
+    if config.resume_from:
+        start_epoch, global_step, best_val_wer = _load_checkpoint(
+            config.resume_from,
+            config=config,
+            model=model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            device=device,
+        )
+        # Carry the pre-interruption early-stopping state forward.
+        if config.patience > 0 and best_val_wer is not None:
+            best_state_path = checkpoints_dir / "best.pt"
+        detail = f", best val WER {best_val_wer:.4f}" if best_val_wer is not None else ""
+        print(
+            f"resumed from {config.resume_from} "
+            f"(continuing at epoch {start_epoch}, step {global_step}{detail})"
+        )
+
     print(f"\ntraining ({config.epochs} epochs, batch {config.batch_size}, "
           f"lr {config.learning_rate}, grad_accum {config.grad_accum_steps})...")
     model.train()
     optimizer.zero_grad()
-    global_step = 0
+    if not config.resume_from:
+        # Baseline checkpoint so a crash before the first epoch save is resumable.
+        _save_checkpoint(
+            checkpoint_path, config=config, model=model, optimizer=optimizer,
+            scheduler=scheduler, next_epoch=start_epoch, global_step=global_step,
+            best_val_wer=best_val_wer,
+        )
+
+    use_early_stop = config.patience > 0 and bool(val_dataset.items)
+    if config.patience > 0 and not val_dataset.items:
+        print("warning: no validation utterances - early stopping disabled")
+
+    stall_count = 0
     start_time = time.perf_counter()
-    for epoch in range(1, config.epochs + 1):
+    trained = False
+    for epoch in range(start_epoch, config.epochs + 1):
+        trained = True
         epoch_loss = 0.0
         for batch in dataloader:
             input_features = batch["input_features"].to(device)
@@ -238,11 +319,64 @@ def _run(config: TrainConfig) -> None:
                     outputs.loss.item(),
                     scheduler.get_last_lr()[0],
                 )
+            if config.save_every_steps > 0 and global_step % config.save_every_steps == 0:
+                _save_checkpoint(
+                    checkpoint_path, config=config, model=model, optimizer=optimizer,
+                    scheduler=scheduler, next_epoch=epoch, global_step=global_step,
+                    best_val_wer=best_val_wer,
+                )
             if config.max_steps > 0 and global_step >= config.max_steps:
                 break
         logger.info("epoch %d complete  mean loss %.4f", epoch, epoch_loss / max(len(dataloader), 1))
+        if config.save_every_steps == 0:
+            _save_checkpoint(
+                checkpoint_path, config=config, model=model, optimizer=optimizer,
+                scheduler=scheduler, next_epoch=epoch + 1, global_step=global_step,
+                best_val_wer=best_val_wer,
+            )
         if config.max_steps > 0 and global_step >= config.max_steps:
             break
+
+        # Early stopping: probe held-out WER and stop when it plateaus, restoring
+        # the best model seen so far.
+        if use_early_stop and epoch % config.eval_every_epochs == 0:
+            report = _evaluate_wer(
+                model, processor, val_dataset,
+                language=config.language, task=config.task,
+                num_beams=config.num_beams, device=device, limit=config.baseline_limit,
+                engine=f"early-stop (epoch {epoch})",
+            )
+            if not report.results:
+                print(f"epoch {epoch}  val WER probe returned no results - skipping")
+                continue
+            wer = float(report.aggregates["wer"]["mean"])
+            best_val_wer, stall_count, should_stop, improved = _early_stop_update(
+                best_val_wer, wer, min_delta=config.min_delta,
+                patience=config.patience, stall_count=stall_count,
+            )
+            print(
+                f"epoch {epoch}  val WER {wer:.4f}  best {best_val_wer:.4f}  "
+                f"(stall {stall_count}/{config.patience})"
+            )
+            if improved:
+                best_state_path = checkpoints_dir / "best.pt"
+                torch.save(model.state_dict(), best_state_path)
+            if should_stop:
+                logger.info(
+                    "early stopping: val WER not improved for %d evaluation(s)",
+                    config.patience,
+                )
+                if best_state_path is not None:
+                    best_state = torch.load(
+                        best_state_path,
+                        map_location=torch.device(device),
+                        weights_only=False,
+                    )
+                    model.load_state_dict(best_state)
+                    print(f"restored best model (val WER {best_val_wer:.4f})")
+                break
+    if not trained:
+        print(f"checkpoint already trained through epoch {config.epochs} - skipping training")
     elapsed = time.perf_counter() - start_time
     print(f"\ntraining finished in {elapsed:.1f}s ({global_step} optimizer steps)")
 
@@ -339,6 +473,125 @@ def _make_dataloader(dataset, config: TrainConfig, device: str):
         num_workers=0,
         pin_memory=device == "cuda",
     )
+
+
+# ---------------------------------------------------------------------------
+def _early_stop_update(best_wer, current_wer, *, min_delta, patience, stall_count):
+    """Early-stopping decision helper (pure, unit-testable).
+
+    Returns ``(new_best_wer, new_stall_count, should_stop, improved)``:
+    - ``improved``: ``current_wer`` beats the best by at least ``min_delta``.
+    - ``should_stop``: WER has not improved for ``patience`` evaluations.
+    """
+    improved = best_wer is None or current_wer <= best_wer - min_delta
+    if improved:
+        return current_wer, 0, False, True
+    stall = stall_count + 1
+    return best_wer, stall, stall >= patience, False
+
+
+def _save_checkpoint(
+    path: Path,
+    *,
+    config: TrainConfig,
+    model,
+    optimizer,
+    scheduler,
+    next_epoch: int,
+    global_step: int,
+    best_val_wer: float | None = None,
+) -> None:
+    """Persist a resumable training checkpoint (atomic write).
+
+    Stores the model/optimizer/scheduler state, the RNG state, the current best
+    val WER (for early stopping) and the config so a run interrupted at any
+    epoch boundary can continue with ``--resume-from``. The payload is a plain
+    dict - ``torch.load`` must use ``weights_only=False`` because it contains
+    non-tensor RNG state.
+    """
+    import random
+
+    import numpy as np
+    import torch
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(path.name + ".tmp")
+    payload = {
+        "config": dataclasses.asdict(config),
+        "next_epoch": next_epoch,
+        "global_step": global_step,
+        "best_val_wer": best_val_wer,
+        "model": model.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "scheduler": scheduler.state_dict(),
+        "torch_rng": torch.get_rng_state(),
+        "cuda_rng": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+        "numpy_rng": np.random.get_state(),
+        "python_rng": random.getstate(),
+    }
+    torch.save(payload, tmp_path)
+    tmp_path.replace(path)
+
+
+def _load_checkpoint(
+    path: str | Path,
+    *,
+    config: TrainConfig,
+    model,
+    optimizer,
+    scheduler,
+    device: str,
+) -> tuple[int, int]:
+    """Load a checkpoint produced by :func:`_save_checkpoint`.
+
+    Validates that the checkpoint was trained with the same model-defining
+    configuration, then restores model/optimizer/scheduler and RNG state.
+    Returns ``(next_epoch, global_step, best_val_wer)``.
+    """
+    import random
+
+    import numpy as np
+    import torch
+
+    ckpt = torch.load(path, map_location=torch.device(device), weights_only=False)
+    saved_config = ckpt.get("config") or {}
+    for key in ("base_model", "language", "task", "seed",
+                "lora_r", "lora_alpha", "lora_dropout"):
+        saved = saved_config.get(key)
+        current = getattr(config, key)
+        if str(saved) != str(current):
+            raise ValueError(
+                f"Checkpoint {path} was trained with {key}={saved!r} but this run has "
+                f"{current!r}. Resume with the same flags (or use a different "
+                f"--output-dir)."
+            )
+    if not _same_manifest(saved_config.get("data"), config.data):
+        raise ValueError(
+            f"Checkpoint {path} was trained on {saved_config.get('data')!r} but this run "
+            f"uses {config.data!r}. Resume with the same --data."
+        )
+    model.load_state_dict(ckpt["model"])
+    optimizer.load_state_dict(ckpt["optimizer"])
+    scheduler.load_state_dict(ckpt["scheduler"])
+    # Restore RNG state so the dataloader shuffle continues where it left off.
+    torch.set_rng_state(ckpt["torch_rng"])
+    cuda_rng = ckpt.get("cuda_rng")
+    if cuda_rng is not None and torch.cuda.is_available():
+        torch.cuda.set_rng_state_all(cuda_rng)
+    if "numpy_rng" in ckpt:
+        np.random.set_state(ckpt["numpy_rng"])
+    if "python_rng" in ckpt:
+        random.setstate(ckpt["python_rng"])
+    return int(ckpt["next_epoch"]), int(ckpt["global_step"]), ckpt.get("best_val_wer")
+
+
+def _same_manifest(saved, current) -> bool:
+    """Compare manifest paths tolerating relative vs. absolute spelling."""
+    saved, current = str(saved), str(current)
+    try:
+        return Path(saved).resolve() == Path(current).resolve()
+    except OSError:
+        return saved == current
 
 
 def _export_ct2(peft_model, base_model_name: str, output_dir: Path) -> Path:

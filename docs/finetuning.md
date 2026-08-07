@@ -70,6 +70,20 @@ The script:
 | `--max-steps` | -1 | `--max-steps 100` for a quick smoke run |
 | `--val-split` | 0.1 | held-out WER |
 | `--no-export-ct2` | - | skip conversion (adapter-only) |
+| `--resume-from` | - | continue an interrupted run from `<output-dir>/checkpoints/latest.pt` |
+| `--save-every-steps` | 0 (epoch end) | checkpoint cadence for crash-safe resume |
+| `--patience` | 0 (off) | early-stop after N val-WER evals without improvement |
+| `--min-delta` | 0.0 | min absolute WER gain to count as progress |
+| `--eval-every-epochs` | 1 | held-out WER probe cadence when `--patience` is set |
+
+**Checkpointing & early stopping.** A resumable checkpoint (model + optimizer
++ scheduler + RNG + config) is written at the end of every epoch (or every
+`--save-every-steps` steps) to `<output-dir>/checkpoints/latest.pt`. Rerun the
+same command with `--resume-from <output-dir>/checkpoints/latest.pt` to
+continue an interrupted run — the model-defining config is validated and the
+baseline probe is skipped. For overfit-prone corpora add
+`--patience 3 --min-delta 0.01`: the loop probes held-out WER each epoch and
+stops (restoring the best model) once WER stops improving.
 
 ## 4. Swap the platform to the fine-tuned model
 

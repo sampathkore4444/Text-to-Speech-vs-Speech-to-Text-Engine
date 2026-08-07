@@ -33,10 +33,12 @@
 7. [Step 3 — Validate your data before training](#step-3--validate-your-data-before-training)
 8. [Step 4 — Smoke run (prove the machinery works)](#step-4--smoke-run-prove-the-machinery-works)
 9. [Step 5 — The real training run](#step-5--the-real-training-run)
+    - [5.5 — Resume & early stopping](#55--resume--early-stopping)
 10. [Step 6 — Read and interpret the results](#step-6--read-and-interpret-the-results)
 11. [Step 7 — Swap the fine-tuned model into the platform](#step-7--swap-the-fine-tuned-model-into-the-platform)
 12. [Step 8 — Evaluate and gate the new model](#step-8--evaluate-and-gate-the-new-model)
 13. [Step 9 — Production considerations](#step-9--production-considerations)
+    - [9.6 — Production readiness checklist](#96--production-readiness-checklist)
 14. [Troubleshooting](#14-troubleshooting)
 15. [Reference — every flag, output artifact, and file](#15-reference--every-flag-output-artifact-and-file)
 
@@ -463,6 +465,11 @@ speechai-finetune \
 | `--seed` | `42` | RNG seed for the train/val split + training | Keep fixed for reproducibility |
 | `--device` | `auto` | `auto` \| `cpu` \| `cuda` | Let it detect; force `cuda` on a GPU box |
 | `--no-export-ct2` | *(off)* | Skip the CTranslate2 conversion (adapter-only run) | For pure experimentation |
+| `--resume-from` | *(none)* | Path to a checkpoint to continue an interrupted run (e.g. `<output-dir>/checkpoints/latest.pt`) | Use the same flags as the original run — the config is validated |
+| `--save-every-steps` | `0` (epoch end) | Checkpoint cadence: save every N optimizer steps, or at the end of every epoch when `0` | Lower for long epochs (finer crash-resume granularity) |
+| `--patience` | `0` (off) | Early stop after this many val-WER evaluations without improvement | `3` is a sensible start for small corpora |
+| `--min-delta` | `0.0` | Minimum absolute WER improvement to count as progress | `0.01` ignores noise-level wobbles |
+| `--eval-every-epochs` | `1` | How often the held-out WER probe runs when `--patience` is set | `2` makes probes cheaper on huge val sets |
 
 ### 5.3 — What happens inside, step by step
 
@@ -490,6 +497,12 @@ Walking through `_run()` in `src/speechai/finetune/train.py`:
    schedule; gradient clipping at norm 1.0; optional grad accumulation. Loss is
    cross-entropy over the reference tokens (padding masked with `-100`).
    Progress logs every 10 steps (hard-coded `log_every_steps` in `TrainConfig`).
+   A resumable **checkpoint** (model + optimizer + scheduler + RNG + config) is
+   written atomically at the end of every epoch (or every `--save-every-steps`
+   steps) to `<out>/checkpoints/latest.pt`. With `--patience N`, the loop
+   probes held-out WER every `--eval-every-epochs` epochs and **early-stops**
+   (restoring the best model from `<out>/checkpoints/best.pt`) once WER fails
+   to improve by at least `--min-delta` for N consecutive probes.
 10. **Fine-tuned WER probe** — same validation set through the *adapted* model;
     written to `report_finetuned.json`.
 11. **Persist adapter** — `model.save_pretrained(<out>/adapter)` +
@@ -539,6 +552,46 @@ Done.
 
 That `0.412 → 0.183` WER improvement on the held-out split is the whole point
 of the exercise.
+
+### 5.5 — Resume & early stopping
+
+**Resuming an interrupted run.** Every run writes a checkpoint at the end of
+each epoch (or every `--save-every-steps` steps) to
+`<output-dir>/checkpoints/latest.pt`, plus one at step 0 so even a crash during
+the first epoch is resumable. To continue after an interruption, rerun the
+**exact same command** with `--resume-from`:
+
+```bash
+speechai-finetune \
+  --data data/manifest.jsonl \
+  --base-model openai/whisper-base \
+  --output-dir data/models/finetuned \
+  --language en --epochs 3 \
+  --resume-from data/models/finetuned/checkpoints/latest.pt
+```
+
+The checkpoint stores the model, optimizer, scheduler, and RNG state: the LR
+schedule continues exactly where it stopped, and with the default epoch-end
+cadence the data-shuffle order does too (with `--save-every-steps`, a mid-epoch
+resume restarts the current epoch from its beginning — a few batches may be
+replayed). The script validates that the checkpoint's model-defining config
+(`data`, `base_model`, `language`, `task`, `seed`, `lora_*`) matches the
+current flags and **fails loudly** otherwise. The baseline WER probe is skipped
+on resume (it was recorded on first start).
+
+**Early stopping.** When your corpus tends to overfit, stop training once the
+held-out WER plateaus instead of running every epoch:
+
+```bash
+speechai-finetune ... --epochs 10 --patience 3 --min-delta 0.01
+```
+
+Every `--eval-every-epochs` (default 1) epochs the loop decodes the validation
+split (capped at `--baseline-limit` utterances) and compares mean WER to the
+best seen so far. WER that beats the best by less than `--min-delta` counts as
+a stall; after `--patience` consecutive stalls the run stops and **restores the
+best model** (kept at `<out>/checkpoints/best.pt`) before the final WER probe
+and CTranslate2 export. Set `--patience 0` to disable (default).
 
 ---
 
@@ -716,6 +769,101 @@ inference host, and ship the `ct2/` directory as an artifact.
 - **Rollback plan:** never overwrite a working `model_path`; deploy new models
   to a *new* directory (`data/models/finetuned-v2/ct2`) and switch the config.
 
+### 9.6 — Production readiness checklist
+
+Use this checklist when moving a fine-tuned model from pilot to full
+production. The platform's overall hardening status — what is delivered today
+and what remains for a banking-grade launch — lives in
+[`docs/production-checklist.md`](docs/production-checklist.md); this section
+maps the *fine-tuning-specific* items onto it.
+
+#### A. Training robustness & reproducibility
+
+- [x] **Checkpoint resume.** Implemented: atomic checkpoints at every epoch
+      boundary (or every `--save-every-steps` steps) to
+      `<out>/checkpoints/latest.pt` — model, optimizer, scheduler, RNG and
+      config — and `--resume-from` continues an interrupted run with the same
+      flags (config validated). Validate resume in CI with a 5-step smoke run.
+- [x] **Early stopping.** Implemented: `--patience N --min-delta F
+      --eval-every-epochs M` probes held-out WER and stops when it plateaus,
+      restoring the best model (`<out>/checkpoints/best.pt`) before the final
+      probe and export. Watch train vs. val WER if you keep it disabled.
+- [ ] **Mixed precision (GPU).** `accelerate launch -m speechai.finetune.train …`
+      enables fp16 and larger effective batches; the plain loop is fp32 by design.
+- [ ] **Pin the base model.** HF ids move. For reproducibility, download the
+      base weights once and pass `--base-model /path/to/local/model`; record the
+      exact id/commit in the model version manifest (below).
+- [ ] **Pin dependencies.** The `finetune` extra pins `transformers>=4.44,<5`;
+      consider locking full versions in a requirements file for training boxes.
+
+#### B. Validate the *served* model (int8 ≠ fp32)
+
+The WER probes inside `speechai-finetune` evaluate the **fp32 PyTorch model**.
+What the platform actually serves is the **int8 CTranslate2 export** —
+quantization can shift accuracy. Validate the artifact you will serve:
+
+```bash
+export SPEECHAI_STT__MODEL_PATH=data/models/finetuned/ct2
+speechai evaluate data/eval_manifest.jsonl --gate   # runs faster-whisper on int8 CT2
+```
+
+- Compare this **int8** WER against `report_finetuned.json` (**fp32**) on the
+  same eval set. A large delta means quantization loss — consider
+  `stt.compute_type=float32` for serving that model, or retrain.
+- Spot-check all three serving paths on a small sample: REST sync
+  (`/v1/transcribe`), batch (`/v1/jobs/transcribe`), and WebSocket streaming
+  (`/v1/ws/transcribe`) — the pipeline's post-processing (sentence regrouping,
+  PII redaction) runs on top of the model and should be verified too.
+
+#### C. Model versioning & rollout
+
+- [ ] **Never overwrite.** Deploy each model to its own directory
+      (`data/models/finetuned-v2/ct2`) and switch `stt.model_path` — rollback
+      is one config flip back to the previous dir or to `model_size`.
+- [ ] **Version manifest per model** — keep next to each `ct2/` dir: model
+      hash (`sha256sum model.bin`), base model + commit, training command,
+      manifest hash, dates, and all three WER numbers (baseline / finetuned /
+      int8). This is your audit trail and your promotion criteria.
+- [ ] **Staged rollout:** (1) offline gate (`speechai evaluate --gate` with
+      tightened tolerances) → (2) shadow/offline replay on recent production
+      calls → (3) canary on low-volume traffic → (4) full switch.
+- [ ] **Registry & blue-green:** `docs/production-checklist.md` lists a managed
+      model registry (S3 + hash manifest) and blue-green/shadow rollout as
+      *remaining* platform work — the config-flip swap above is the interim
+      mechanism.
+- [ ] **Docker:** ship the `ct2/` dir as a pinned artifact inside `./data`
+      (bind-mounted to `/data`), referenced by absolute path in the compose
+      environment.
+
+#### D. Data governance & compliance
+
+- [ ] **Anonymize before training** — strip PII (see `speechai.redaction` for
+      the bank's sensitive-pattern list) from the corpus; never train on raw
+      customer identifiers.
+- [ ] **Transcription QA** — have a human verify a statistically sampled
+      subset of references before training (measure the label-error rate; a
+      model's WER can never be better than its references).
+- [ ] **Consent & retention** — only train on audio you are authorized to use;
+      align corpus retention with bank policy (the platform's `storage` TTL
+      mechanics exist for job results — extend the same discipline to training
+      corpora).
+- [ ] **Lineage** — keep the manifest, its hash, and the split seed with the
+      model version manifest so any model can be reproduced or audited.
+- [ ] **Air-gapped environments** — pre-download base weights on a connected
+      machine and import the pinned model directory (see Prerequisites).
+
+#### E. Evaluation rigor
+
+- [ ] **Locked eval set** — a held-out manifest that is never mixed into
+      training, with human-verified labels, is your promotion gate.
+- [ ] **Tighten tolerances** — the defaults (`0.10` WER / `0.50` RTF in
+      `eval.default_*_tolerance`) are starting points; set per-use-case bars
+      and enforce them in CI.
+- [ ] **Trending** — the training run already pushes
+      `stt_wer{finetune-baseline}` / `stt_wer{finetune-finetuned}` to
+      Prometheus; extend `deploy/prometheus/alerts.yml` to alert when a new
+      model's gates regress vs. the champion.
+
 ---
 
 ## 14. Troubleshooting
@@ -726,7 +874,7 @@ inference host, and ship the `ct2/` directory as an artifact.
 | T2 | `transformers` import errors or forward signature errors | You're on transformers ≥ 5 — the extra pins `<5`; reinstall with `pip install "transformers>=4.44,<5"` |
 | T3 | Hang / download at "loading processor + base model" | First run downloads the base model from the HF Hub; needs network. Pre-download and pass `--base-model <local dir>` |
 | T4 | WER barely improves after training | Data problem, not code: references don't match audio, vocabulary under-represented, wrong `--language`, or too little data. Re-examine the worst-WER rows in `report_finetuned.json` |
-| T5 | Val WER rises while train loss falls | Overfitting — fewer epochs, more data, or `--lora-dropout 0.1` |
+| T5 | Val WER rises while train loss falls | Overfitting — fewer epochs, more data, `--lora-dropout 0.1`, or early-stop with `--patience 3 --min-delta 0.01` |
 | T6 | Out of memory during training | Lower `--batch-size 1` and raise `--grad-accum-steps 4`; close other apps; 8 GB RAM minimum |
 | T7 | `No examples found in manifest` | Manifest path wrong or empty; check paths relative to your CWD (Step 3 gotcha) |
 | T8 | Export step errors / warnings about missing `tokenizer.json` | The converter copies `tokenizer.json`, `preprocessor_config.json`, `generation_config.json` from the base model; if your base model repo lacks one, download them manually into `ct2/` |
@@ -763,6 +911,11 @@ speechai-finetune --data DATA [options]
   --seed N                       42
   --device {auto,cpu,cuda}
   --no-export-ct2                skip conversion
+  --resume-from PATH             continue an interrupted run
+  --save-every-steps N           0 = end of every epoch
+  --patience N                   early-stop evals without WER improvement (0 = off)
+  --min-delta F                  min absolute WER gain to count as progress
+  --eval-every-epochs N          val WER probe cadence with --patience
 ```
 
 ### Artifacts produced under `--output-dir`
@@ -772,6 +925,9 @@ speechai-finetune --data DATA [options]
   adapter/                    # PEFT LoRA adapter weights (safetensors) + config
   preprocessor_config.json    # HF processor saved to the output dir root
   tokenizer.json              # ... together with the other processor files
+  checkpoints/
+    latest.pt                 # resumable training checkpoint (--resume-from)
+    best.pt                   # best val-WER model (only when --patience > 0)
   report_baseline.json        # stock-model WER/CER/RTF on the val split
   report_finetuned.json       # adapted-model WER/CER/RTF on the val split
   ct2/                        # ← point stt.model_path HERE
