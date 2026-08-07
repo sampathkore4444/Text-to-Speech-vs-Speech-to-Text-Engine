@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -137,6 +138,7 @@ def top_regressions(
 # ---------------------------------------------------------------------------
 def build_int8_engine(
     ct2_dir: str | Path,
+    settings: Settings,
     *,
     device: str,
     compute_type: str,
@@ -148,7 +150,6 @@ def build_int8_engine(
     precedence over ``model_size`` inside the engine, and we pin the compute
     type to ``int8`` by default so the probe matches the exported quantization.
     """
-    settings = Settings.load()
     settings.stt.model_path = str(ct2_dir)
     settings.stt.device = device
     settings.stt.compute_type = compute_type
@@ -214,7 +215,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     # Evaluate the int8 export through the platform's own engine + harness.
-    engine = build_int8_engine(ct2_dir, device=args.device, compute_type=args.compute_type)
+    engine = build_int8_engine(ct2_dir, settings, device=args.device, compute_type=args.compute_type)
     try:
         report = run_from_manifest(engine, args.manifest, language=args.language)
     except Exception as exc:
@@ -265,10 +266,15 @@ def main(argv: list[str] | None = None) -> int:
     report_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     console.print(f"[green]verification report written to[/green] {report_path}")
 
-    # Optional MLflow logging (best-effort no-op when disabled).
+    # Optional MLflow logging (best-effort no-op when disabled). Mirrors
+    # ``speechai evaluate``: on via the flag, config ``tracking.enabled``, or
+    # the MLFLOW_TRACKING_URI env var; ``--no-mlflow`` forces it off.
+    tracking_on = not args.no_mlflow and bool(
+        args.mlflow_tracking_uri or settings.tracking.enabled or os.environ.get("MLFLOW_TRACKING_URI")
+    )
     tracker = ExperimentTracker(
-        enabled=not args.no_mlflow,
-        tracking_uri=args.mlflow_tracking_uri,
+        enabled=tracking_on,
+        tracking_uri=args.mlflow_tracking_uri or settings.tracking.tracking_uri or None,
         experiment_name=args.mlflow_experiment,
         run_name=f"verify-{report.dataset}",
     )

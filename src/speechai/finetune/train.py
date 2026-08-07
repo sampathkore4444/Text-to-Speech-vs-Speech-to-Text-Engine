@@ -480,7 +480,7 @@ def _run(config: TrainConfig, tracker: ExperimentTracker) -> None:
     print(f"adapter + processor saved to {output_dir}")
 
     if config.export_ct2:
-        ct2_dir = _export_ct2(model, config.base_model, output_dir)
+        ct2_dir = _export_ct2(model, processor, config.base_model, output_dir)
         print(f"\nCTranslate2 model exported to: {ct2_dir}")
         print("swap the platform to the fine-tuned model with:")
         print(f"    SPEECHAI_STT__MODEL_PATH={ct2_dir}")
@@ -681,7 +681,7 @@ def _same_manifest(saved, current) -> bool:
         return saved == current
 
 
-def _export_ct2(peft_model, base_model_name: str, output_dir: Path) -> Path:
+def _export_ct2(peft_model, processor, base_model_name: str, output_dir: Path) -> Path:
     """Merge LoRA into the base weights and convert to a CTranslate2 model
     that faster-whisper can load directly."""
     from ctranslate2.converters import TransformersConverter
@@ -693,9 +693,13 @@ def _export_ct2(peft_model, base_model_name: str, output_dir: Path) -> Path:
 
     # ctranslate2's TransformersConverter takes a *path* to saved transformers
     # weights (it loads them itself), not a model object - persist the merged
-    # model first, then convert from disk.
+    # model first, then convert from disk. The converter also builds the CT2
+    # vocabularies from the tokenizer, so the source dir needs the processor
+    # files (vocab.json / merges.txt / tokenizer_config.json) next to the
+    # weights.
     source_dir = output_dir / "ct2_source"
     merged.save_pretrained(str(source_dir))
+    processor.save_pretrained(str(source_dir))
 
     ct2_dir = output_dir / "ct2"
     # Start clean: the converter refuses to overwrite an existing directory
@@ -719,13 +723,20 @@ def _export_ct2(peft_model, base_model_name: str, output_dir: Path) -> Path:
     shutil.rmtree(source_dir, ignore_errors=True)
 
     # faster-whisper needs the tokenizer + preprocessor next to model.bin.
+    # Prefer the processor files saved into the source dir - that works even
+    # for local/air-gapped base models - and only fall back to the HF hub.
     for name in ("tokenizer.json", "preprocessor_config.json", "generation_config.json"):
+        local_file = source_dir / name
+        if local_file.is_file():
+            shutil.copy(local_file, ct2_dir / name)
+            logger.info("copied %s from merged source", name)
+            continue
         try:
-            local_path = hf_hub_download(base_model_name, name)
-            shutil.copy(local_path, ct2_dir / name)
-            logger.info("copied %s", name)
+            hub_path = hf_hub_download(base_model_name, name)
+            shutil.copy(hub_path, ct2_dir / name)
+            logger.info("copied %s from base model", name)
         except Exception:
-            logger.warning("could not copy %s from the base model", name)
+            logger.warning("could not copy %s (missing in source dir and base model)", name)
     return ct2_dir
 
 
