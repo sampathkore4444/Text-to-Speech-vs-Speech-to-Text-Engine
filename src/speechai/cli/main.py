@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -21,6 +22,7 @@ from rich.table import Table
 from speechai.audio.io import load_audio, to_asr_audio, write_wav
 from speechai.core.config import Settings
 from speechai.core.logging import setup_logging
+from speechai.core.tracking import ExperimentTracker
 from speechai.eval.runner import assert_within_tolerance, run_from_manifest
 from speechai.redaction.pii import RedactionPolicy, Redactor
 from speechai.stt.base import STTOptions, build_stt_engine
@@ -67,6 +69,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_evaluate.add_argument("--language", default=None)
     p_evaluate.add_argument("--report", default=None, help="Where to write report.json")
     p_evaluate.add_argument("--gate", action="store_true", help="Fail if WER/RTF tolerances breached")
+    p_evaluate.add_argument(
+        "--no-mlflow", action="store_true", help="Disable MLflow experiment tracking"
+    )
 
     sub.add_parser("models", help="Show engine/model configuration")
 
@@ -163,14 +168,65 @@ def _evaluate(args: argparse.Namespace, settings: Settings) -> int:
     )
     report.export_json(report_path)
     console.print(f"[green]report written to[/green] {report_path}")
+    tracker = _track_evaluation(settings, report, report_path, enabled=not args.no_mlflow)
     if args.gate:
-        assert_within_tolerance(
-            report,
-            wer_tolerance=settings.eval.default_wer_tolerance,
-            rtf_tolerance=settings.eval.default_rtf_tolerance,
-        )
-        console.print("[green]regression gates passed[/green]")
+        try:
+            assert_within_tolerance(
+                report,
+                wer_tolerance=settings.eval.default_wer_tolerance,
+                rtf_tolerance=settings.eval.default_rtf_tolerance,
+            )
+            console.print("[green]regression gates passed[/green]")
+        except ValueError:
+            # A breached quality gate is a failed run in the tracking UI.
+            if tracker is not None:
+                tracker.end(status="FAILED")
+            raise
+    if tracker is not None:
+        tracker.end()
     return 0
+
+
+def _track_evaluation(
+    settings: Settings, report, report_path: str | Path, *, enabled: bool
+) -> ExperimentTracker | None:
+    """Record an evaluation run to MLflow (no-op unless configured).
+
+    Opt-in via ``tracking.enabled`` in config, ``MLFLOW_TRACKING_URI``, or the
+    ``--mlflow-tracking-uri`` style URI; ``--no-mlflow`` overrides it off.
+    Starts the run and logs params/metrics/artifact but does **not** end it -
+    the caller ends it so the status reflects the ``--gate`` outcome.
+    Returns the active tracker, or ``None`` when tracking is disabled.
+    """
+    tracking_on = enabled and (settings.tracking.enabled or bool(os.environ.get("MLFLOW_TRACKING_URI")))
+    tracker = ExperimentTracker(
+        enabled=tracking_on,
+        tracking_uri=settings.tracking.tracking_uri or None,
+        experiment_name=settings.tracking.experiment_name,
+        run_name=f"{report.dataset}-{report.engine}",
+    )
+    if not tracker.enabled:
+        return None
+    tracker.start(tags={"tool": "speechai-evaluate", "dataset": report.dataset, "engine": report.engine})
+    tracker.log_params(
+        {
+            "dataset": report.dataset,
+            "engine": report.engine,
+            "model": settings.stt.model_path or settings.stt.model_size,
+            "language": settings.stt.language,
+            "wer_tolerance": settings.eval.default_wer_tolerance,
+            "rtf_tolerance": settings.eval.default_rtf_tolerance,
+            "n_utterances": len(report.results),
+        }
+    )
+    agg = report.aggregates
+    metrics_: dict[str, float] = {}
+    for key in ("wer", "cer", "rtf", "latency_seconds"):
+        for stat in ("mean", "median", "p90"):
+            metrics_[f"{key}_{stat}"] = agg[key][stat]
+    tracker.log_metrics(metrics_)
+    tracker.log_artifact(report_path)
+    return tracker
 
 
 def _models(settings: Settings) -> int:

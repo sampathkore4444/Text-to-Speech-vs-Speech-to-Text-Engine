@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import logging
+import os
 import random
 import shutil
 import sys
@@ -41,6 +42,7 @@ from pathlib import Path
 
 from speechai.core import metrics
 from speechai.core.timing import compute_rtf
+from speechai.core.tracking import ExperimentTracker
 from speechai.eval.metrics import EvaluationReport, UtteranceResult, char_error_rate, word_error_rate
 from speechai.finetune.dataset import WhisperDataset, collate_whisper_batch, split_manifest
 
@@ -77,6 +79,11 @@ class TrainConfig:
     patience: int = 0  # early stop after N val-WER evals without improvement (0 = off)
     min_delta: float = 0.0  # minimum absolute WER improvement to count as progress
     eval_every_epochs: int = 1  # held-out WER probe cadence when --patience is set
+    # Optional MLflow experiment tracking (no-op unless a URI is configured)
+    mlflow_tracking_uri: str | None = None
+    mlflow_experiment: str = "speechai-finetune"
+    mlflow_run_name: str | None = None
+    mlflow_log_model: bool = False
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -127,6 +134,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--eval-every-epochs", type=int, default=1,
         help="evaluate held-out WER every N epochs when --patience is set",
     )
+    parser.add_argument(
+        "--mlflow-tracking-uri", default=None,
+        help="MLflow tracking server URI (env MLFLOW_TRACKING_URI is also honored)",
+    )
+    parser.add_argument(
+        "--mlflow-experiment", default="speechai-finetune",
+        help="MLflow experiment name",
+    )
+    parser.add_argument(
+        "--mlflow-run-name", default=None,
+        help="MLflow run name (default: auto)",
+    )
+    parser.add_argument(
+        "--mlflow-log-model", action="store_true",
+        help="upload the exported ct2 model directory as an MLflow artifact",
+    )
     return parser
 
 
@@ -164,23 +187,36 @@ def main(argv: list[str] | None = None) -> int:
         patience=args.patience,
         min_delta=args.min_delta,
         eval_every_epochs=args.eval_every_epochs,
+        mlflow_tracking_uri=args.mlflow_tracking_uri,
+        mlflow_experiment=args.mlflow_experiment,
+        mlflow_run_name=args.mlflow_run_name,
+        mlflow_log_model=args.mlflow_log_model,
+    )
+    tracker = ExperimentTracker(
+        enabled=True,
+        tracking_uri=config.mlflow_tracking_uri,
+        experiment_name=config.mlflow_experiment,
+        run_name=config.mlflow_run_name,
     )
     try:
-        _run(config)
+        _run(config, tracker)
     except ImportError as exc:
         print(f"\nMissing dependency: {exc}")
         print("Install the finetune extra:  pip install -e '.[finetune]'")
         print("(CPU torch on Windows:  pip install torch --index-url https://download.pytorch.org/whl/cpu)")
+        tracker.end(status="FAILED")
         return 2
     except Exception as exc:  # surface clean failures
         logger.exception("fine-tuning failed")
         print(f"\nERROR: {exc}")
+        tracker.end(status="FAILED")
         return 1
+    tracker.end()
     return 0
 
 
 # ---------------------------------------------------------------------------
-def _run(config: TrainConfig) -> None:
+def _run(config: TrainConfig, tracker: ExperimentTracker) -> None:
     import torch
     import transformers
     from peft import LoraConfig, get_peft_model
@@ -195,6 +231,20 @@ def _run(config: TrainConfig) -> None:
     print(f"base model : {config.base_model}")
     print(f"device     : {device}")
     print(f"output dir : {output_dir}")
+
+    tracker.start(tags={"task": "finetune", "base_model": config.base_model})
+    # Log the full run config, but never the mlflow_* keys themselves (they
+    # could contain a credentials-bearing tracking URI).
+    tracker.log_params(
+        {
+            key: value
+            for key, value in dataclasses.asdict(config).items()
+            if not key.startswith("mlflow_")
+        }
+    )
+    if tracker.enabled:
+        uri = config.mlflow_tracking_uri or os.environ.get("MLFLOW_TRACKING_URI", "")
+        print(f"mlflow     : tracking to {uri} (experiment {config.mlflow_experiment})")
 
     # 1. Data -----------------------------------------------------------------
     train_examples, val_examples = split_manifest(config.data, val_split=config.val_split, seed=config.seed)
@@ -223,6 +273,13 @@ def _run(config: TrainConfig) -> None:
         )
         _save_report(baseline, output_dir / "report_baseline.json", tag="baseline")
         print(_report_line(baseline, "BASELINE WER"))
+        tracker.log_metrics(
+            {
+                "baseline_wer": baseline.aggregates["wer"]["mean"],
+                "baseline_cer": baseline.aggregates["cer"]["mean"],
+                "baseline_rtf": baseline.aggregates["rtf"]["mean"],
+            }
+        )
 
     # 3. Attach LoRA -----------------------------------------------------------
     lora_config = LoraConfig(
@@ -328,6 +385,13 @@ def _run(config: TrainConfig) -> None:
             if config.max_steps > 0 and global_step >= config.max_steps:
                 break
         logger.info("epoch %d complete  mean loss %.4f", epoch, epoch_loss / max(len(dataloader), 1))
+        tracker.log_metrics(
+            {
+                "train_loss": epoch_loss / max(len(dataloader), 1),
+                "lr": scheduler.get_last_lr()[0],
+            },
+            step=global_step,
+        )
         if config.save_every_steps == 0:
             _save_checkpoint(
                 checkpoint_path, config=config, model=model, optimizer=optimizer,
@@ -350,6 +414,7 @@ def _run(config: TrainConfig) -> None:
                 print(f"epoch {epoch}  val WER probe returned no results - skipping")
                 continue
             wer = float(report.aggregates["wer"]["mean"])
+            tracker.log_metrics({"val_wer": wer}, step=global_step)
             best_val_wer, stall_count, should_stop, improved = _early_stop_update(
                 best_val_wer, wer, min_delta=config.min_delta,
                 patience=config.patience, stall_count=stall_count,
@@ -391,6 +456,19 @@ def _run(config: TrainConfig) -> None:
         )
         _save_report(finetuned, output_dir / "report_finetuned.json", tag="finetuned")
         print(_report_line(finetuned, "FINE-TUNED WER"))
+        improvement = (
+            baseline.aggregates["wer"]["mean"] - finetuned.aggregates["wer"]["mean"]
+            if baseline is not None
+            else None
+        )
+        tracker.log_metrics(
+            {
+                "wer": finetuned.aggregates["wer"]["mean"],
+                "cer": finetuned.aggregates["cer"]["mean"],
+                "rtf": finetuned.aggregates["rtf"]["mean"],
+                "improvement": improvement,
+            }
+        )
         if baseline is not None:
             print(f"improvement: baseline {baseline.aggregates['wer']['mean']:.3f} -> "
                   f"finetuned {finetuned.aggregates['wer']['mean']:.3f}")
@@ -407,6 +485,15 @@ def _run(config: TrainConfig) -> None:
         print("swap the platform to the fine-tuned model with:")
         print(f"    SPEECHAI_STT__MODEL_PATH={ct2_dir}")
         print("(or set stt.model_path in configs/config.yaml)")
+
+    if tracker.enabled:
+        for name in ("report_baseline.json", "report_finetuned.json"):
+            report_file = output_dir / name
+            if report_file.is_file():
+                tracker.log_artifact(report_file)
+        ct2_dir = output_dir / "ct2"
+        if config.mlflow_log_model and ct2_dir.is_dir():
+            tracker.log_artifact(ct2_dir)
 
     print("\nDone.")
 
@@ -604,10 +691,20 @@ def _export_ct2(peft_model, base_model_name: str, output_dir: Path) -> Path:
     merged = peft_model.merge_and_unload()
     merged.eval()
 
+    # ctranslate2's TransformersConverter takes a *path* to saved transformers
+    # weights (it loads them itself), not a model object - persist the merged
+    # model first, then convert from disk.
+    source_dir = output_dir / "ct2_source"
+    merged.save_pretrained(str(source_dir))
+
     ct2_dir = output_dir / "ct2"
+    # Start clean: the converter refuses to overwrite an existing directory
+    # (on some versions --force only exists on the CLI wrapper, and a stale
+    # dir from a failed run would otherwise abort the export).
+    shutil.rmtree(ct2_dir, ignore_errors=True)
     ct2_dir.mkdir(parents=True, exist_ok=True)
     logger.info("converting to CTranslate2 (a few minutes on CPU)...")
-    converter = TransformersConverter(merged, copy_files=[])
+    converter = TransformersConverter(str(source_dir), copy_files=[])
     # ctranslate2 3.x used convert_to_file(); 4.x renamed it to convert().
     convert = getattr(converter, "convert", None) or converter.convert_to_file
     try:
@@ -617,6 +714,9 @@ def _export_ct2(peft_model, base_model_name: str, output_dir: Path) -> Path:
             convert(str(ct2_dir), quantization="int8")
         except TypeError:
             convert(str(ct2_dir))
+    # The fp32 source weights are only needed for the conversion - drop them
+    # so the output dir carries just the artifacts the platform serves.
+    shutil.rmtree(source_dir, ignore_errors=True)
 
     # faster-whisper needs the tokenizer + preprocessor next to model.bin.
     for name in ("tokenizer.json", "preprocessor_config.json", "generation_config.json"):

@@ -109,6 +109,15 @@ class EvalConfig(BaseModel):
     report_dir: str = "data/eval"
 
 
+class TrackingConfig(BaseModel):
+    """Optional experiment tracking (MLflow). Best-effort: no-ops when disabled."""
+
+    enabled: bool = False
+    provider: Literal["mlflow"] = "mlflow"
+    tracking_uri: str = ""  # e.g. http://mlflow:5000 or a local ./mlruns path
+    experiment_name: str = "speechai"
+
+
 class Settings(BaseModel):
     """Top-level settings object. Use :meth:`Settings.load` to construct."""
 
@@ -121,6 +130,7 @@ class Settings(BaseModel):
     queue: QueueConfig = Field(default_factory=QueueConfig)
     redaction: RedactionConfig = Field(default_factory=RedactionConfig)
     eval: EvalConfig = Field(default_factory=EvalConfig)
+    tracking: TrackingConfig = Field(default_factory=TrackingConfig)
 
     # ------------------------------------------------------------------
     # Derived paths (resolved lazily against the process CWD; in Docker

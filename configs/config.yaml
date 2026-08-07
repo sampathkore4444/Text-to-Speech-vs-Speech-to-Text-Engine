@@ -93,3 +93,12 @@ eval:
   default_wer_tolerance: 0.10  # regression gate targets used by `speechai evaluate`
   default_rtf_tolerance: 0.50
   report_dir: "data/eval"
+
+tracking:
+  # Optional MLflow experiment tracking for `speechai evaluate` (and
+  # `speechai-finetune` via --mlflow-tracking-uri / MLFLOW_TRACKING_URI).
+  # Everything no-ops when disabled or when MLflow is not installed.
+  enabled: false
+  provider: "mlflow"
+  tracking_uri: ""             # e.g. http://localhost:5000 or a local ./mlruns path
+  experiment_name: "speechai"

@@ -185,6 +185,7 @@ scripts/
   download_models.py  Piper voice download + optional Whisper cache warm
   make_sample_audio.py  TTS -> WAV -> manifest (demo loop + eval data)
   streaming_demo.py    Reference WebSocket client (mic/file -> ASR, text -> TTS)
+  verify_ct2_model.py  int8-vs-fp32 WER gate before swapping a fine-tuned model
 deploy/prometheus/
   prometheus.yml   Scrape config (api:8000)
   alerts.yml       SLO alert rules (WER, RTF, down, job failures, backlog, ...)
@@ -265,6 +266,10 @@ apply every `SPEECHAI_*` env var over the tree → validate with Pydantic.
 | `eval` | `default_wer_tolerance` | `0.10` | `--gate` WER ceiling (10%) |
 | | `default_rtf_tolerance` | `0.50` | `--gate` RTF ceiling |
 | | `report_dir` | `data/eval` | Where eval JSON reports go |
+| `tracking` | `enabled` | `false` | Master switch for MLflow experiment tracking (best-effort no-op when off) |
+| | `provider` | `mlflow` | Tracking backend |
+| | `tracking_uri` | `""` | MLflow server URI (env `MLFLOW_TRACKING_URI` also honored) |
+| | `experiment_name` | `speechai` | MLflow experiment name |
 
 ### 4.3 Derived data directories
 
@@ -816,7 +821,14 @@ Command: `speechai-finetune --data data/manifest.jsonl --base-model openai/whisp
 6. **Export** — merges LoRA into base weights and converts to a **CTranslate2
    int8** model in `<output-dir>/ct2` (with tokenizer/preprocessor copied next
    to `model.bin` so faster-whisper can load it).
-7. **Hot swap** — point the platform at the export with zero code changes:
+7. **Verify the int8 export before swapping** — `python
+   scripts/verify_ct2_model.py --ct2-dir data/models/finetuned/ct2 --manifest
+   data/eval_manifest.jsonl --fp32-report data/models/finetuned/report_finetuned.json`
+   evaluates the *served* int8 model through the same harness and fails
+   (exit 1) if its WER regresses beyond `--max-wer-gap` vs. the fp32 probe or
+   breaches the absolute WER/RTF bars — i.e. the quantization loss is
+   explicitly gated before any traffic points at the new model.
+8. **Hot swap** — point the platform at the export with zero code changes:
    ```bash
    SPEECHAI_STT__MODEL_PATH=data/models/finetuned/ct2
    # or stt.model_path in configs/config.yaml

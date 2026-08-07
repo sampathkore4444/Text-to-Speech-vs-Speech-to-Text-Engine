@@ -75,6 +75,9 @@ The script:
 | `--patience` | 0 (off) | early-stop after N val-WER evals without improvement |
 | `--min-delta` | 0.0 | min absolute WER gain to count as progress |
 | `--eval-every-epochs` | 1 | held-out WER probe cadence when `--patience` is set |
+| `--mlflow-tracking-uri` | - | enable MLflow tracking (env `MLFLOW_TRACKING_URI` honored) |
+| `--mlflow-experiment` | `speechai-finetune` | MLflow experiment name |
+| `--mlflow-log-model` | off | upload the exported `ct2/` dir as an artifact |
 
 **Checkpointing & early stopping.** A resumable checkpoint (model + optimizer
 + scheduler + RNG + config) is written at the end of every epoch (or every
@@ -84,6 +87,14 @@ continue an interrupted run — the model-defining config is validated and the
 baseline probe is skipped. For overfit-prone corpora add
 `--patience 3 --min-delta 0.01`: the loop probes held-out WER each epoch and
 stops (restoring the best model) once WER stops improving.
+
+**Experiment tracking (MLflow).** Optional and best-effort: pass
+`--mlflow-tracking-uri <uri>` (or set `MLFLOW_TRACKING_URI`) to record the run
+— every training parameter, `baseline_wer/cer/rtf`, per-epoch
+`train_loss`/`lr`/`val_wer`, the final `wer/cer/rtf` + `improvement`, and both
+JSON reports (plus the `ct2/` model with `--mlflow-log-model`). Install the
+extra with `pip install -e ".[finetune,mlflow]"`. `speechai evaluate` tracks
+the same way via the `tracking` section of `configs/config.yaml`.
 
 ## 4. Swap the platform to the fine-tuned model
 
@@ -107,6 +118,21 @@ Verify with:
 ```bash
 speechai models
 speechai transcribe data/samples/sample_01_account_balance.wav --json
+```
+
+**Verify the export before swapping.** The training probes measure the **fp32
+PyTorch model**; what you serve is the **int8 CTranslate2 export** and
+quantization can shift accuracy. Check the actual artifact with
+`scripts/verify_ct2_model.py` — it evaluates the int8 model through the
+platform's own engine + eval harness, compares mean WER against
+`report_finetuned.json`, and fails (exit 1) on the quantization gap
+(`--max-wer-gap`, default 0.05) or the absolute WER/RTF bars:
+
+```bash
+python scripts/verify_ct2_model.py \
+  --ct2-dir data/models/finetuned/ct2 \
+  --manifest data/eval_manifest.jsonl \
+  --fp32-report data/models/finetuned/report_finetuned.json
 ```
 
 ## 5. Evaluate & gate

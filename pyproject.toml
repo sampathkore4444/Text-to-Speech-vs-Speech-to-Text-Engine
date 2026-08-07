@@ -61,6 +61,11 @@ finetune = [
     "accelerate>=0.30",
     "safetensors>=0.4",
 ]
+# Optional MLflow experiment tracking for `speechai-finetune` / `speechai evaluate`.
+# Without it the CLIs simply skip tracking (best-effort no-op).
+mlflow = [
+    "mlflow>=2.10",
+]
 
 [project.scripts]
 speechai = "speechai.cli.main:main"

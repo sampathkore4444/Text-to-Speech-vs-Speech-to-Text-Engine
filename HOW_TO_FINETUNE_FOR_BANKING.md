@@ -14,6 +14,7 @@
 > | Manifest loader (JSONL / CSV / wav+txt dir) | `src/speechai/eval/loader.py` |
 > | Starter sample data generator | `scripts/make_sample_audio.py` |
 > | Evaluation harness (WER/CER/RTF + gates) | `src/speechai/eval/*` |
+> | int8-vs-fp32 verification before swap | `scripts/verify_ct2_model.py` |
 > | faster-whisper engine (loads the fine-tuned model) | `src/speechai/stt/whisper_engine.py` |
 > | Configuration (model swap) | `configs/config.yaml` (`stt.model_path`) |
 >
@@ -34,8 +35,10 @@
 8. [Step 4 — Smoke run (prove the machinery works)](#step-4--smoke-run-prove-the-machinery-works)
 9. [Step 5 — The real training run](#step-5--the-real-training-run)
     - [5.5 — Resume & early stopping](#55--resume--early-stopping)
+    - [5.6 — Experiment tracking (MLflow)](#56--experiment-tracking-mlflow)
 10. [Step 6 — Read and interpret the results](#step-6--read-and-interpret-the-results)
 11. [Step 7 — Swap the fine-tuned model into the platform](#step-7--swap-the-fine-tuned-model-into-the-platform)
+    - [7.1 — Verify the int8 export before swapping](#71--verify-the-int8-export-before-swapping)
 12. [Step 8 — Evaluate and gate the new model](#step-8--evaluate-and-gate-the-new-model)
 13. [Step 9 — Production considerations](#step-9--production-considerations)
     - [9.6 — Production readiness checklist](#96--production-readiness-checklist)
@@ -470,6 +473,10 @@ speechai-finetune \
 | `--patience` | `0` (off) | Early stop after this many val-WER evaluations without improvement | `3` is a sensible start for small corpora |
 | `--min-delta` | `0.0` | Minimum absolute WER improvement to count as progress | `0.01` ignores noise-level wobbles |
 | `--eval-every-epochs` | `1` | How often the held-out WER probe runs when `--patience` is set | `2` makes probes cheaper on huge val sets |
+| `--mlflow-tracking-uri` | *(none)* | MLflow server URI (env `MLFLOW_TRACKING_URI` also honored) | Set it to enable experiment tracking — otherwise everything no-ops |
+| `--mlflow-experiment` | `speechai-finetune` | MLflow experiment name | Group runs by base model or corpus |
+| `--mlflow-run-name` | auto | MLflow run name | `--mlflow-run-name base-v2-3epochs` for readable history |
+| `--mlflow-log-model` | *(off)* | Upload the exported `ct2/` dir as an MLflow artifact | Only when you want the model stored in the tracking server |
 
 ### 5.3 — What happens inside, step by step
 
@@ -593,6 +600,39 @@ a stall; after `--patience` consecutive stalls the run stops and **restores the
 best model** (kept at `<out>/checkpoints/best.pt`) before the final WER probe
 and CTranslate2 export. Set `--patience 0` to disable (default).
 
+### 5.6 — Experiment tracking (MLflow)
+
+`speechai-finetune` can record every run to **MLflow** — params, per-epoch
+metrics, and reports — so you can compare experiments side by side instead of
+reading JSON files. Tracking is **strictly optional and best-effort**: without
+a URI it silently no-ops, and without the `mlflow` package it warns once.
+
+```bash
+pip install -e ".[finetune,mlflow]"        # MLflow is a separate optional extra
+
+speechai-finetune \
+  --data data/manifest.jsonl --base-model openai/whisper-base \
+  --output-dir data/models/finetuned --language en --epochs 3 \
+  --mlflow-tracking-uri http://localhost:5000 \
+  --mlflow-experiment bank-asr --mlflow-run-name base-v2 \
+  --mlflow-log-model
+```
+
+What lands in MLflow per run:
+
+- **Params** — every `TrainConfig` field (base model, epochs, LR, LoRA rank,
+  seed, …).
+- **Metrics** — `baseline_wer/cer/rtf`, per-epoch `train_loss` + `lr` (and
+  `val_wer` when early stopping is on), and the final `wer/cer/rtf` + the
+  `improvement` (baseline − finetuned WER).
+- **Artifacts** — `report_baseline.json` + `report_finetuned.json` always;
+  the exported `ct2/` model directory when `--mlflow-log-model` is set.
+- Runs are marked `FINISHED`/`FAILED` automatically, so the UI shows true
+  status even when training errors out.
+
+The URI also comes from the `MLFLOW_TRACKING_URI` environment variable if the
+flag is omitted (a local `./mlruns` path works without a server).
+
 ---
 
 ## Step 6 — Read and interpret the results
@@ -628,6 +668,40 @@ Each contains `aggregates` (`mean`, `median`, `p90`) and per-utterance
 The faster-whisper engine (`WhisperSTTEngine._model_ref`) loads
 `stt.model_path` **if set**, otherwise `stt.model_size`. So swapping is a
 single config change — no code changes, no rebuild.
+
+### 7.1 — Verify the int8 export before swapping (recommended)
+
+The WER probes during training measure the **fp32 PyTorch model**; what you
+swap in is the **int8 CTranslate2 export** — and quantization can shift
+accuracy. Before pointing the platform at it, verify the exact artifact you
+will serve with `scripts/verify_ct2_model.py`, which evaluates the int8 model
+through the platform's own faster-whisper engine + eval harness and compares it
+against `report_finetuned.json` (fp32):
+
+```bash
+python scripts/verify_ct2_model.py \
+  --ct2-dir data/models/finetuned/ct2 \
+  --manifest data/eval_manifest.jsonl \
+  --fp32-report data/models/finetuned/report_finetuned.json \
+  --language en
+```
+
+It prints an fp32-vs-int8 comparison table (WER/CER/RTF means + the worst
+per-utterance regressions), writes the full verification report to
+`data/eval/verify_ct2-<dataset>-int8.json`, and **fails (exit 1)** unless every
+swap gate holds:
+
+| Gate | Default | Breached when |
+|---|---|---|
+| Quantization gap | `--max-wer-gap 0.05` | int8 WER − fp32 WER > 0.05 |
+| Absolute quality | `--max-wer-abs 0.10` | int8 mean WER > 0.10 |
+| Serving speed | `--max-rtf 0.50` | int8 mean RTF > 0.50 |
+
+Only the `engines` extra (faster-whisper) is needed — **not**
+torch/transformers — so it runs on the same host that serves the model. Pass
+`--compute-type auto` if your serving path uses GPU float16 instead of int8;
+optional MLflow logging via `--mlflow-tracking-uri` (or `--no-mlflow`). In CI,
+run it with `--max-wer-gap` tightened and treat exit 1 as a failed promotion.
 
 ### Option A — environment variable (session-scoped, great for testing)
 
@@ -798,6 +872,11 @@ maps the *fine-tuning-specific* items onto it.
 
 #### B. Validate the *served* model (int8 ≠ fp32)
 
+- [x] **int8-vs-fp32 verification.** `scripts/verify_ct2_model.py` evaluates
+      the served int8 export through the platform's own engine + eval harness,
+      compares mean WER against `report_finetuned.json`, and gates the swap on
+      `--max-wer-gap` / `--max-wer-abs` / `--max-rtf` (Step 7.1).
+
 The WER probes inside `speechai-finetune` evaluate the **fp32 PyTorch model**.
 What the platform actually serves is the **int8 CTranslate2 export** —
 quantization can shift accuracy. Validate the artifact you will serve:
@@ -916,6 +995,10 @@ speechai-finetune --data DATA [options]
   --patience N                   early-stop evals without WER improvement (0 = off)
   --min-delta F                  min absolute WER gain to count as progress
   --eval-every-epochs N          val WER probe cadence with --patience
+  --mlflow-tracking-uri URI      enable MLflow tracking (env honored)
+  --mlflow-experiment NAME       speechai-finetune
+  --mlflow-run-name NAME         auto if omitted
+  --mlflow-log-model             upload ct2/ as an artifact
 ```
 
 ### Artifacts produced under `--output-dir`
@@ -946,6 +1029,7 @@ speechai-finetune --data DATA [options]
 | Dataset, collate, split | `src/speechai/finetune/dataset.py` |
 | Manifest formats | `src/speechai/eval/loader.py` |
 | WER/CER/RTF computation | `src/speechai/eval/metrics.py` |
+| int8-vs-fp32 verification before swap | `scripts/verify_ct2_model.py` |
 | Model swap (`model_path or model_size`) | `src/speechai/stt/whisper_engine.py` (`_model_ref`) |
 | Config key | `configs/config.yaml` → `stt.model_path` |
 

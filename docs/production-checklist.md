@@ -51,10 +51,9 @@ the rollout plan.
       baseline vs fine-tuned WER reports, adapter merge + CTranslate2 export,
       and a one-line engine swap via `stt.model_path` (see `docs/finetuning.md`
       and the step-by-step `HOW_TO_FINETUNE_FOR_BANKING.md`).
-
-**Remaining**
-
-- [ ] Experiment tracking hooks (MLflow/W&B) around `speechai evaluate` / fine-tuning.
+- [x] **MLflow experiment tracking** for `speechai evaluate` / `speechai-finetune`
+      (optional extra; best-effort no-op without a URI — see
+      `HOW_TO_FINETUNE_FOR_BANKING.md` §5.6).
 
 ## 4. Speech pipeline: data prep → training → inference → evaluation → optimization
 
